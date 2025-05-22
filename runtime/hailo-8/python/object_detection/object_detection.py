@@ -1,4 +1,79 @@
 #!/usr/bin/env python3
+"""
+Object Detection Script for Hailo HEF Models with Optional Validation Metrics.
+
+This script performs object detection using a pre-trained model in Hailo's
+HEF format on an accelerator. It supports two main modes of operation:
+
+1. Normal Inference Mode:
+   - Activated when the `--data` argument (for a YAML dataset file) is NOT provided.
+   - Processes input from various sources specified by the `--input` argument:
+     - A single image file.
+     - A directory of image files.
+     - A video file.
+     - A live camera stream (e.g., by passing "camera").
+   - Class names for display and visualization are sourced from the text file
+     specified by the `--labels` argument (e.g., "coco.txt"). Each line in this
+     file should contain one class name, in the order corresponding to the
+     model's output indices.
+   - Output: Displays detections on screen and can optionally save output images
+     (for image inputs) or a video file (for stream inputs via `--save_stream_output`).
+
+2. Validation Metrics Mode:
+   - Activated when the `--data` argument IS provided, pointing to a YOLO-style
+     `data.yaml` file. This YAML defines the dataset, including paths to image
+     splits and class name information.
+   - In this mode, the `--input` argument is generally IGNORED. The script will
+     process images from the dataset split defined in the `data.yaml`.
+   - By default, it processes the 'val' (validation) split. Use the `--test_split`
+     flag to process the 'test' split instead.
+   - Accumulates inference outputs and calculates COCO-style metrics (P, R, mAP50,
+     mAP50-95), displaying them in a table similar to `yolo detect val`.
+
+   - **Critical: Class Name Handling for Validation Metrics:**
+     - The `names` list within the `data.yaml` file (specified by `--data`) is
+       considered the **AUTHORITATIVE SOURCE** for class names and their order.
+       These names are used for calculating and displaying the metrics table.
+       This YAML should align with how the model was trained and how the ground
+       truth label files (which use integer class IDs) were generated.
+     - The `--labels` argument (path to a `.txt` file with class names, one per line)
+       is STILL REQUIRED.
+       - If the `data.yaml` file lacks a `names` list, the script will FALL BACK to
+         using the class names from the `--labels` `.txt` file for metrics.
+         A warning will be issued, and you must ensure this `.txt` file accurately
+         reflects the model's class order.
+       - If both `data.yaml` (with a `names` list) and the `--labels` `.txt` file
+         are provided, the script will use the YAML names for the metrics table.
+         It will issue a warning if these two sources seem to differ significantly
+         (e.g., in class count or names), but the YAML names will take precedence
+         for metrics.
+       - The internal `ObjectDetectionUtils` (used for preprocessing and potentially
+         drawing bounding box labels if visualizations are active) is initialized
+         using the class names from the `--labels` `.txt` file. If these names
+         differ from the authoritative YAML names used for metrics, visualizations
+         on detected boxes might display names from the `.txt` file, while the
+         metrics table uses names from the YAML. For pure metrics generation, this
+         visual discrepancy is less critical than the accuracy of the metrics table itself.
+
+Key Arguments:
+  -n, --net: Path to the HEF model file.
+  -i, --input: Input source (image, folder, video, "camera"). Ignored if --data is used.
+  -l, --labels: Path to a text file with class names (one per line).
+  -b, --batch_size: Number of images per batch for inference.
+  --data: Path to the data.yaml file to enable validation metrics mode.
+  --test_split: If --data is used, use the 'test' split instead of 'val'.
+  -s, --save_stream_output: If processing a stream, save the output to a video file.
+
+Example Usage:
+  # Normal inference on an image
+  python object_detection.py -n model.hef -i image.jpg -l coco.txt
+
+  # Validation metrics using 'val' split from dataset.yaml
+  python object_detection.py -n model.hef --data dataset.yaml -l coco.txt
+
+  # Validation metrics using 'test' split
+  python object_detection.py -n model.hef --data dataset.yaml -l coco.txt --test_split
+"""
 
 import argparse
 import os
