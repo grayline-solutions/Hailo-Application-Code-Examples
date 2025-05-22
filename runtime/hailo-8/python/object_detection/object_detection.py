@@ -622,45 +622,89 @@ def infer(
     input_source: str,
     save_stream_output: bool,
     net_path: str,
-    labels_path: str,
+    labels_txt_path: str, # Renamed for clarity, this is from args.labels
     batch_size: int,
-    data_yaml_path: Optional[str] = None,
-    use_test_split: bool = False
+    data_yaml_path: Optional[str] = None, # From args.data
+    use_test_split: bool = False # From args.test_split
 ) -> None:
-    global all_hailo_predictions # Clear for new run
-    all_hailo_predictions = [] 
+    global all_hailo_predictions, ground_truth_map # Clear for new run
+    all_hailo_predictions = []
+    ground_truth_map = {} # Populated by load_ground_truth_data
 
-    det_utils = ObjectDetectionUtils(labels_path)
-    class_names_for_metrics = det_utils.labels
-
-    cap = None
-    image_file_paths_for_inference: List[str] = []
+    # This will be the definitive list of class names for the current run.
+    authoritative_class_names: Optional[List[str]] = None
     run_validation_metrics = False
 
+    # Initialize image_file_paths_for_inference to an empty list
+    image_file_paths_for_inference: List[str] = [] 
+    cap: Optional[cv2.VideoCapture] = None # Initialize cap as well
+
+    # 1. Initialize ObjectDetectionUtils with the provided --labels TXT file.
+    # This instance will be used for preprocessing, drawing, etc.
+    # Its internal .labels list comes from this TXT file.
+    det_utils = ObjectDetectionUtils(labels_txt_path)
+    class_names_from_txt_file: List[str] = list(det_utils.labels) # Get a copy
+
+    if not class_names_from_txt_file:
+        logger.error(f"CRITICAL: The --labels file ('{labels_txt_path}') is empty or could not be loaded. Cannot determine class names.")
+        return
+
+    # 2. Determine authoritative_class_names and if validation should run
     if data_yaml_path:
-        logger.info(f"Data YAML provided: {data_yaml_path}. Loading validation set for metrics.")
-        image_file_paths_for_inference = load_ground_truth_data(data_yaml_path, use_test_split) # Populates global ground_truth_map
-        if image_file_paths_for_inference and ground_truth_map:
+        logger.info(f"Data YAML provided: {data_yaml_path}. Attempting to load validation set.")
+        # load_ground_truth_data populates global ground_truth_map
+        image_file_paths_for_inference = load_ground_truth_data(data_yaml_path, use_test_split)
+
+        if image_file_paths_for_inference: # ground_truth_map is implicitly checked by this
             run_validation_metrics = True
-            logger.info(f"Validation mode: {len(image_file_paths_for_inference)} images, {len(ground_truth_map)} with GT entries.")
-            # Update class names from data.yaml if they exist and are primary
-            if Path(data_yaml_path).exists():
+            logger.info(f"Validation mode active: {len(image_file_paths_for_inference)} images to process.")
+
+            parsed_yaml_names: Optional[List[str]] = None
+            num_classes_yaml: Optional[int] = None
+            try:
                 with open(data_yaml_path, 'r') as f_yaml:
                     yaml_cfg = yaml.safe_load(f_yaml)
                     if 'names' in yaml_cfg and isinstance(yaml_cfg['names'], list):
-                        if len(yaml_cfg['names']) == len(class_names_for_metrics) or not class_names_for_metrics: # Basic check
-                            logger.info("Using class names from data.yaml for metrics.")
-                            class_names_for_metrics = yaml_cfg['names']
-                        else:
-                            logger.warning("Mismatch in class count between labels file and data.yaml. Sticking to labels file for now.")
-        else:
-            logger.warning("Failed to load validation set from YAML or no ground truths. Metrics will not be calculated. Check YAML paths and label directories.")
-            if not image_file_paths_for_inference: # Critical failure if --data was given but no images loaded
-                logger.error("No images loaded via --data. Exiting.")
-                return
-    
-    if not run_validation_metrics: # Fallback to --input if not doing validation
-        logger.info(f"Not in validation mode. Using input: {input_source}")
+                        parsed_yaml_names = yaml_cfg['names']
+                    if 'nc' in yaml_cfg and isinstance(yaml_cfg['nc'], int):
+                        num_classes_yaml = yaml_cfg['nc']
+            except Exception as e:
+                logger.warning(f"Could not effectively parse data.yaml ('{data_yaml_path}') for class names/nc: {e}")
+
+            if parsed_yaml_names:
+                authoritative_class_names = parsed_yaml_names
+                logger.info(f"Using class names from data.yaml ('{data_yaml_path}') as authoritative for metrics: {len(authoritative_class_names)} classes.")
+                # (Optional consistency checks and warnings as before)
+                if num_classes_yaml and num_classes_yaml != len(parsed_yaml_names):
+                    logger.warning(f"YAML 'nc' ({num_classes_yaml}) mismatches 'names' list length ({len(parsed_yaml_names)}). Trusting 'names' list length from YAML.")
+                if set(class_names_from_txt_file) != set(parsed_yaml_names) or len(class_names_from_txt_file) != len(parsed_yaml_names):
+                    logger.warning(
+                        f"Class names from --labels file ('{labels_txt_path}') differ from authoritative names in data.yaml ('{data_yaml_path}'). "
+                        f"YAML names will be used for metrics table. Visualizations will use names from '{labels_txt_path}'."
+                    )
+            elif class_names_from_txt_file: # Fallback if YAML has no names
+                authoritative_class_names = class_names_from_txt_file
+                logger.warning(
+                    f"data.yaml ('{data_yaml_path}') does not contain a 'names' list. "
+                    f"Falling back to class names from --labels file ('{labels_txt_path}') as authoritative for metrics. "
+                    "Ensure this is consistent with your model and ground truth IDs."
+                )
+            else: 
+                logger.error(f"CRITICAL: No class names available from data.yaml or '{labels_txt_path}'. Cannot proceed with validation accurately.")
+                run_validation_metrics = False
+        else: # image_file_paths_for_inference was empty after load_ground_truth_data
+            logger.warning(f"Failed to load images/labels for validation from '{data_yaml_path}'. Disabling metrics mode.")
+            run_validation_metrics = False
+            # image_file_paths_for_inference is already [] if load_ground_truth_data returned empty
+
+    # 3. Setup for normal inference if not in validation mode or if validation setup failed
+    if not run_validation_metrics:
+        logger.info(f"Normal inference mode. Using input: {input_source}")
+        authoritative_class_names = class_names_from_txt_file # Use TXT names for normal mode
+        logger.info(f"Using class names from --labels file: {labels_txt_path}") # Already logged if TXT is the source
+
+        # Initialize image_file_paths_for_inference and cap for normal mode
+        # This part is crucial and was correctly placed in your original snippet
         if input_source.lower() == "camera":
             cap = cv2.VideoCapture(0)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_CAP_WIDTH)
@@ -668,42 +712,48 @@ def infer(
             if not cap.isOpened():
                 logger.error("Cannot open camera")
                 return
+            image_file_paths_for_inference = [] # {RE-ASSIGNED (was [])} No fixed image paths for camera
         elif Path(input_source).is_file() and Path(input_source).suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
             cap = cv2.VideoCapture(input_source)
             if not cap.isOpened():
                 logger.error(f"Cannot open video file: {input_source}")
                 return
+            image_file_paths_for_inference = [] # {RE-ASSIGNED (was [])} No fixed image paths for video file
         else: # Image or folder of images
             input_path_obj = Path(input_source)
+            temp_image_paths = [] # Use a temporary list before assigning
             if input_path_obj.is_file() and input_path_obj.suffix.lower() in IMAGE_EXTENSIONS:
-                image_file_paths_for_inference = [str(input_path_obj.resolve())]
+                temp_image_paths = [str(input_path_obj.resolve())]
             elif input_path_obj.is_dir():
-                image_file_paths_for_inference = sorted([str(p.resolve()) for p in input_path_obj.glob("*") if p.suffix.lower() in IMAGE_EXTENSIONS])
+                temp_image_paths = sorted([str(p.resolve()) for p in input_path_obj.glob("*") if p.suffix.lower() in IMAGE_EXTENSIONS])
             
-            if not image_file_paths_for_inference:
+            if not temp_image_paths: # Check the temporary list
                 logger.error(f"No valid images found for input: {input_source}")
                 return
-            
-            # Validate image count vs batch size (for non-validation runs)
+            image_file_paths_for_inference = temp_image_paths # Assign if valid paths found
+
             if batch_size > 1 and len(image_file_paths_for_inference) % batch_size != 0 :
-                 logger.error(f"Number of images ({len(image_file_paths_for_inference)}) must be divisible by batch_size ({batch_size}) when batch_size > 1 for non-validation runs.")
+                 logger.error(f"Number of images ({len(image_file_paths_for_inference)}) must be divisible by batch_size ({batch_size}) when batch_size > 1 for non-validation file-based runs.")
                  return
 
-    # Ensure queue sizes are reasonable, e.g., batch_size * a small multiplier
-    # Or ensure input_queue maxsize is at least batch_size
+    if not authoritative_class_names: # Final check
+        logger.error("CRITICAL: Authoritative class names could not be established. Exiting.")
+        return
+
+    # 4. Proceed with inference setup
     q_multiplier = 5 
-    input_q_size = max(batch_size * q_multiplier, q_multiplier*2) # Avoid zero size if batch_size is small
-    output_q_size = max(batch_size * q_multiplier, q_multiplier*2)
+    input_q_size = max(batch_size * q_multiplier, q_multiplier * 2)
+    output_q_size = max(batch_size * q_multiplier, q_multiplier * 2)
     input_queue: queue.Queue = queue.Queue(maxsize=input_q_size)
     output_queue: queue.Queue = queue.Queue(maxsize=output_q_size)
-
 
     hailo_inference = HailoAsyncInference(
         net_path, input_queue, output_queue, batch_size, send_original_frame=True
     )
-    network_input_shape = hailo_inference.get_input_shape() # (height, width, channels)
+    network_input_shape = hailo_inference.get_input_shape()
     model_net_h, model_net_w = network_input_shape[0], network_input_shape[1]
 
+    # det_utils (initialized from labels_txt_path) is used for threads
     preprocess_thread = threading.Thread(
         target=preprocess,
         args=(image_file_paths_for_inference, cap, batch_size, input_queue, model_net_w, model_net_h, det_utils)
@@ -716,27 +766,36 @@ def infer(
     preprocess_thread.start()
     postprocess_thread.start()
 
-    hailo_inference.run() # This will block until input_queue gets None from preprocess_thread
+    hailo_inference.run() 
     
-    # After hailo_inference.run() finishes (meaning preprocess signaled end and all inference jobs submitted)
-    preprocess_thread.join() # Ensure preprocess has fully finished putting Nones etc.
-    output_queue.put(None)   # Signal postprocess thread to exit its loop
-    postprocess_thread.join()# Ensure postprocess has finished
+    preprocess_thread.join()
+    output_queue.put(None)
+    postprocess_thread.join()
 
-    if run_validation_metrics:
-        if all_hailo_predictions and ground_truth_map:
+    # 5. Calculate and print metrics if in validation mode
+    if run_validation_metrics: # authoritative_class_names should be set if run_validation_metrics is True
+        if all_hailo_predictions and ground_truth_map: # ground_truth_map check might be redundant if run_validation_metrics implies it's populated
             logger.info("Calculating validation metrics...")
-            calculate_and_print_metrics_table(all_hailo_predictions, ground_truth_map, class_names_for_metrics)
+            calculate_and_print_metrics_table(all_hailo_predictions, ground_truth_map, authoritative_class_names)
         else:
-            logger.warning("Not enough data for validation metrics (predictions or ground truth missing/mismatch).")
+            logger.warning("Not enough data for validation metrics (e.g., no predictions accumulated or ground truth map empty despite validation mode).")
 
     logger.info('Inference/Validation run completed.')
 
 
 def main() -> None:
-    args = parse_args()
+    args = parse_args() # Ensure parse_args includes --test_split
     # Global lists/dicts are cleared/reinitialized within infer or load_ground_truth_data
-    infer(args.input, args.save_stream_output, args.net, args.labels, args.batch_size, args.data, args.test_split)
+    infer(
+        input_source=args.input,
+        save_stream_output=args.save_stream_output,
+        net_path=args.net,
+        labels_txt_path=args.labels, # Pass the path to the .txt labels file
+        batch_size=args.batch_size,
+        data_yaml_path=args.data,
+        use_test_split=args.test_split # Pass the boolean flag
+)
+
 
 if __name__ == "__main__":
     main()
