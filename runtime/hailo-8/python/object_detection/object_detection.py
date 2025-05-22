@@ -706,31 +706,39 @@ def infer(
         # Initialize image_file_paths_for_inference and cap for normal mode
         # This part is crucial and was correctly placed in your original snippet
         if input_source.lower() == "camera":
-            cap = cv2.VideoCapture(0)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_CAP_WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_CAP_HEIGHT)
-            if not cap.isOpened():
+            temp_cap = cv2.VideoCapture(0) # Attempt to create
+            if not temp_cap.isOpened():   # Check if successfully opened IMMEDIATELY
                 logger.error("Cannot open camera")
+                if temp_cap: temp_cap.release() # Good practice to release if created
                 return
-            image_file_paths_for_inference = [] # {RE-ASSIGNED (was [])} No fixed image paths for camera
+            # Now we know temp_cap is opened and valid
+            temp_cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_CAP_WIDTH)
+            temp_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_CAP_HEIGHT)
+            cap = temp_cap # Assign to the broader scoped 'cap'
+            image_file_paths_for_inference = [] 
         elif Path(input_source).is_file() and Path(input_source).suffix.lower() in ['.mp4', '.avi', '.mov', '.mkv']:
-            cap = cv2.VideoCapture(input_source)
-            if not cap.isOpened():
+            temp_cap = cv2.VideoCapture(input_source) # Attempt to create
+            if not temp_cap.isOpened():  # Check if successfully opened IMMEDIATELY
                 logger.error(f"Cannot open video file: {input_source}")
+                if temp_cap: temp_cap.release()
                 return
-            image_file_paths_for_inference = [] # {RE-ASSIGNED (was [])} No fixed image paths for video file
-        else: # Image or folder of images
+            # Now we know temp_cap is opened and valid
+            cap = temp_cap # Assign to the broader scoped 'cap'
+            image_file_paths_for_inference = []
+        else: 
+            # In this case (image or folder input), cap remains None, which is intended.
+            # No methods are called on 'cap' if it's None here.
             input_path_obj = Path(input_source)
-            temp_image_paths = [] # Use a temporary list before assigning
+            temp_image_paths = [] 
             if input_path_obj.is_file() and input_path_obj.suffix.lower() in IMAGE_EXTENSIONS:
                 temp_image_paths = [str(input_path_obj.resolve())]
             elif input_path_obj.is_dir():
                 temp_image_paths = sorted([str(p.resolve()) for p in input_path_obj.glob("*") if p.suffix.lower() in IMAGE_EXTENSIONS])
             
-            if not temp_image_paths: # Check the temporary list
+            if not temp_image_paths:
                 logger.error(f"No valid images found for input: {input_source}")
                 return
-            image_file_paths_for_inference = temp_image_paths # Assign if valid paths found
+            image_file_paths_for_inference = temp_image_paths
 
             if batch_size > 1 and len(image_file_paths_for_inference) % batch_size != 0 :
                  logger.error(f"Number of images ({len(image_file_paths_for_inference)}) must be divisible by batch_size ({batch_size}) when batch_size > 1 for non-validation file-based runs.")
