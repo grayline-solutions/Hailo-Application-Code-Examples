@@ -497,9 +497,10 @@ def calculate_ap_for_class(
     
     num_gt = len(ground_truths_for_class)
     if num_gt == 0: # No ground truths for this class
-        # If there are predictions, P=0. If no predictions, P might be considered 1 or 0. R=0. AP=0.
-        return (0.0, 0.0 if sorted_preds else 1.0, 0.0, 0)
-
+        # If predictions exist, they are all FPs, so P=0. If no predictions, P might be 0 (no TPs).
+        # R=0, AP=0.
+        precision_val = 0.0 # Always 0 if no GTs, as TP will be 0.
+        return (0.0, precision_val, 0.0, 0) # AP, Precision, Recall, num_tp
 
     # Mark all GTs as not used for matching yet for this AP calculation
     gt_used_flags = [False] * num_gt
@@ -620,17 +621,19 @@ def calculate_and_print_metrics_table(
         # ... (rest of the metrics calculation for the class) ...
         all_total_gt_instances += num_gt_instances_for_class
 
-        # Calculate AP@0.50 and associated P, R
-        ap50, p50, r50, _ = calculate_ap_for_class(current_class_predictions, current_class_ground_truths, 0.50)
-        
-        # Calculate mAP50-95 (average of APs at IoU thresholds 0.50, 0.55, ..., 0.95)
-        aps_for_map50_95_range: List[float] = []
-        for iou_thresh_int in range(50, 100, 5): # 0.50, 0.55, ..., 0.95
-            iou_val = iou_thresh_int / 100.0
-            ap_at_iou, _, _, _ = calculate_ap_for_class(current_class_predictions, current_class_ground_truths, iou_val)
-            aps_for_map50_95_range.append(ap_at_iou)
-        
-        map50_95_class = np.mean(aps_for_map50_95_range) if aps_for_map50_95_range else 0.0
+        if num_gt_instances_for_class == 0: # If no GT instances for this class
+            p50, r50, ap50, map50_95_class = 0.0, 0.0, 0.0, 0.0
+        else:
+            # Calculate AP@0.50 and associated P, R
+            ap50, p50, r50, _ = calculate_ap_for_class(current_class_predictions, current_class_ground_truths, 0.50)
+            
+            # Calculate mAP50-95
+            aps_for_map50_95_range: List[float] = []
+            for iou_thresh_int in range(50, 100, 5):
+                iou_val = iou_thresh_int / 100.0
+                ap_at_iou, _, _, _ = calculate_ap_for_class(current_class_predictions, current_class_ground_truths, iou_val)
+                aps_for_map50_95_range.append(ap_at_iou)
+            map50_95_class = np.mean(aps_for_map50_95_range) if aps_for_map50_95_range else 0.0
 
         class_summary_metrics.append({
             'name': class_name,
