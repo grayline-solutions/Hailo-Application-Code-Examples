@@ -369,15 +369,13 @@ def infer(
     global all_hailo_predictions # Clear for new run
     all_hailo_predictions = [] 
     
-    # This will hold the ground truth map if validation is active
     current_run_ground_truth_map: Dict[str, Dict[str, Any]] = {} 
-
     authoritative_class_names: Optional[List[str]] = None
     run_validation_metrics = False
     image_file_paths_for_inference: List[str] = [] 
     cap: Optional[cv2.VideoCapture] = None
 
-    det_utils = ObjectDetectionUtils(labels_txt_path) # Initialized once
+    det_utils = ObjectDetectionUtils(labels_txt_path)
     class_names_from_txt_file: List[str] = list(det_utils.labels)
 
     if not class_names_from_txt_file:
@@ -386,42 +384,75 @@ def infer(
 
     if data_yaml_path:
         logger.info(f"Data YAML provided: {data_yaml_path}. Attempting to load dataset for validation.")
-        # Call imported function; it returns image paths and the ground truth map
-        loaded_image_paths, loaded_gt_map = load_ground_truth_data(data_yaml_path, use_test_split)
+        loaded_image_paths, loaded_gt_map = load_ground_truth_data(data_yaml_path, use_test_split) # Assuming this is imported
         
         if loaded_image_paths: 
             image_file_paths_for_inference = loaded_image_paths
-            current_run_ground_truth_map = loaded_gt_map # Store returned map
+            current_run_ground_truth_map = loaded_gt_map
             run_validation_metrics = True
             logger.info(f"Validation mode active: {len(image_file_paths_for_inference)} images to process.")
 
-            # Determine authoritative_class_names (logic from previous response)
             parsed_yaml_names: Optional[List[str]] = None
-            num_classes_yaml: Optional[int] = None
             try:
                 with open(data_yaml_path, 'r') as f_yaml:
                     yaml_cfg = yaml.safe_load(f_yaml)
-                    if 'names' in yaml_cfg and isinstance(yaml_cfg['names'], list):
-                        parsed_yaml_names = yaml_cfg['names']
-                    if 'nc' in yaml_cfg and isinstance(yaml_cfg['nc'], int):
-                        num_classes_yaml = yaml_cfg['nc']
-            except Exception as e:
-                logger.warning(f"Could not effectively parse data.yaml ('{data_yaml_path}') for class names/nc: {e}")
+                
+                if yaml_cfg: # Proceed only if YAML was successfully loaded and parsed
+                    if 'names' in yaml_cfg:
+                        names_field = yaml_cfg['names']
+                        if isinstance(names_field, dict):
+                            # Handle dictionary format for names: {0: 'name0', 1: 'name1', ...}
+                            if not names_field: # Empty dictionary
+                                parsed_yaml_names = []
+                            elif all(isinstance(k, int) for k in names_field.keys()):
+                                sorted_keys = sorted(names_field.keys())
+                                # Ultralytics expects class IDs to be 0-indexed and contiguous for the list representation
+                                if sorted_keys == list(range(len(sorted_keys))):
+                                    parsed_yaml_names = [names_field[k] for k in sorted_keys]
+                                else:
+                                    logger.warning(
+                                        f"YAML 'names' dictionary keys ({sorted_keys}) are not contiguous from 0. "
+                                        f"This dataset format for 'names' might not be fully compatible if indices are sparse or non-standard. "
+                                        f"Attempting to use names ordered by sorted keys."
+                                    )
+                                    # This creates a list based on the values of the sorted keys.
+                                    # If class IDs in GT/model output are not 0,1,2... this could misalign.
+                                    parsed_yaml_names = [names_field[k] for k in sorted_keys]
+                            else:
+                                logger.warning("YAML 'names' is a dictionary, but its keys are not all integers. Cannot reliably parse class names.")
+                                # parsed_yaml_names remains None
+                        elif isinstance(names_field, list):
+                            # Handles list format if provided: ['name0', 'name1', ...]
+                            parsed_yaml_names = names_field
+                        else:
+                            logger.warning(f"YAML 'names' field is an unexpected type: {type(names_field)}. Expected dict or list.")
+                            # parsed_yaml_names remains None
+                    else:
+                        logger.info(f"Data YAML ('{data_yaml_path}') does not contain a 'names' field.")
+                        # parsed_yaml_names remains None
+                else: 
+                    logger.warning(f"YAML file '{data_yaml_path}' is empty or could not be parsed into a dictionary.")
+                    # parsed_yaml_names remains None
+            except Exception as e: # Catches errors from open, safe_load, or subsequent processing
+                logger.warning(f"Error processing data.yaml ('{data_yaml_path}') for class names: {e}")
+                # parsed_yaml_names remains None
 
-            if parsed_yaml_names:
+            # Set authoritative_class_names based on parsing outcome
+            if parsed_yaml_names is not None: # Successfully parsed (even if empty list from empty dict/list)
                 authoritative_class_names = parsed_yaml_names
                 logger.info(f"Using class names from data.yaml ('{data_yaml_path}') as authoritative for metrics: {len(authoritative_class_names)} classes.")
-                if num_classes_yaml and num_classes_yaml != len(parsed_yaml_names):
-                    logger.warning(f"YAML 'nc' ({num_classes_yaml}) mismatches 'names' list length ({len(parsed_yaml_names)}). Trusting 'names' list length from YAML.")
-                if set(class_names_from_txt_file) != set(parsed_yaml_names) or len(class_names_from_txt_file) != len(parsed_yaml_names):
+                # Removed 'nc' comparison logic
+                if class_names_from_txt_file and (set(class_names_from_txt_file) != set(parsed_yaml_names) or len(class_names_from_txt_file) != len(parsed_yaml_names)):
                     logger.warning(
-                        f"Class names from --labels file ('{labels_txt_path}') differ from authoritative names in data.yaml ('{data_yaml_path}'). "
-                        f"YAML names will be used for metrics table. Visualizations will use names from '{labels_txt_path}' (via ObjectDetectionUtils)."
+                        f"Class names from --labels file ('{labels_txt_path}') "
+                        f"({len(class_names_from_txt_file)} classes) differ from authoritative names in data.yaml ('{data_yaml_path}') "
+                        f"({len(parsed_yaml_names)} classes). YAML names will be used for metrics. "
+                        f"Visualizations will use names from '{labels_txt_path}' (via ObjectDetectionUtils)."
                     )
-            elif class_names_from_txt_file:
+            elif class_names_from_txt_file: # Fallback if YAML parsing failed or 'names' not present/valid
                 authoritative_class_names = class_names_from_txt_file
                 logger.warning(
-                    f"data.yaml ('{data_yaml_path}') does not contain a 'names' list. "
+                    f"Could not use 'names' from data.yaml ('{data_yaml_path}'). "
                     f"Falling back to class names from --labels file ('{labels_txt_path}') as authoritative for metrics. "
                     "Ensure this is consistent with your model and ground truth IDs."
                 )
@@ -434,8 +465,9 @@ def infer(
     
     if not run_validation_metrics:
         logger.info(f"Normal inference mode. Using input: {input_source}")
-        if not authoritative_class_names: 
+        if not authoritative_class_names: # Ensure set for normal mode if not set by failed validation path
              authoritative_class_names = class_names_from_txt_file
+        # Removed redundant logging of using labels_txt_path here as it's the default
         
         if input_source.lower() == "camera":
             temp_cap = cv2.VideoCapture(0)
@@ -476,6 +508,7 @@ def infer(
         logger.error("CRITICAL: Authoritative class names could not be established. Exiting.")
         return
 
+    # --- The rest of the function remains the same ---
     q_multiplier = 5 
     input_q_size = max(batch_size * q_multiplier, q_multiplier * 2)
     output_q_size = max(batch_size * q_multiplier, q_multiplier * 2)
@@ -492,6 +525,7 @@ def infer(
         target=preprocess,
         args=(image_file_paths_for_inference, cap, batch_size, input_queue, model_net_w, model_net_h, det_utils)
     )
+    # Pass args.save_stream_output (which is save_output_globally) to postprocess
     postprocess_thread = threading.Thread(
         target=postprocess,
         args=(output_queue, cap, save_stream_output, det_utils, run_validation_metrics, model_net_h, model_net_w)
@@ -507,8 +541,7 @@ def infer(
     if run_validation_metrics and authoritative_class_names:
         if all_hailo_predictions and current_run_ground_truth_map: 
             logger.info("Calculating validation metrics...")
-            # Call the imported function
-            calculate_and_print_metrics_table(
+            calculate_and_print_metrics_table( # This function is imported
                 all_hailo_predictions, 
                 current_run_ground_truth_map, 
                 authoritative_class_names

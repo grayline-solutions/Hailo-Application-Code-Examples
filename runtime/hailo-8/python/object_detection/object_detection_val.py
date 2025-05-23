@@ -9,6 +9,89 @@ from loguru import logger
 
 from utils import IMAGE_EXTENSIONS
 
+def _resolve_image_path(path_str: str, primary_root: Path, secondary_root: Optional[Path] = None) -> Optional[Path]:
+    """Helper to resolve image paths, trying primary_root then optionally secondary_root."""
+    p = Path(path_str)
+    if p.is_absolute():
+        return p.resolve() if p.exists() else None
+    
+    resolved_path = (primary_root / p).resolve()
+    if resolved_path.exists():
+        return resolved_path
+    
+    if secondary_root:
+        resolved_path_secondary = (secondary_root / p).resolve()
+        if resolved_path_secondary.exists():
+            return resolved_path_secondary
+            
+    return None
+
+
+def _derive_label_path(image_path: Path, dataset_root_for_label_search: Path) -> Path:
+    """
+    Derives the corresponding label file path from an image file path.
+    Assumes a common structure like 'images/' -> 'labels/'.
+    Tries to find 'images' segment relative to dataset_root and replace it.
+    If not found, tries replacing the immediate parent directory if it's 'images'.
+    Fallback if no 'images' segment, tries putting 'labels' as sibling to image's parent folder.
+    """
+    img_path_str = str(image_path)
+    
+    # Try to find 'images' relative to a known dataset root for more reliable replacement
+    try:
+        relative_to_root = image_path.relative_to(dataset_root_for_label_search)
+        parts = list(relative_to_root.parts)
+        # Try to find and replace 'images' or 'Images'
+        for i, p in enumerate(parts):
+            if p.lower() == 'images':
+                parts[i] = 'labels'
+                label_rel_path = Path(*parts[:-1]) / (image_path.stem + '.txt')
+                return (dataset_root_for_label_search / label_rel_path).resolve()
+    except ValueError: # image_path is not under dataset_root_for_label_search
+        pass # Proceed to more general replacement
+
+    # More general replacement: replace the last occurrence of "images" in the path
+    # This is more heuristic.
+    if 'images' in img_path_str.lower():
+        # Attempt to replace the last 'images' path component
+        parts = list(image_path.parts)
+        for i in range(len(parts) - 1, -1, -1):
+            if parts[i].lower() == 'images':
+                label_parts = parts[:i] + ['labels'] + parts[i+1:]
+                label_path = Path(*label_parts[:-1]) / (image_path.stem + '.txt') # up to parent, then stem.txt
+                return label_path.resolve()
+    
+    # Fallback: assume labels are in a parallel directory structure to the image's direct parent
+    # e.g., if image is in '.../split_name/images_subfolder/img.jpg', try '.../split_name/labels_subfolder/img.txt'
+    # This is very heuristic. A common structure is often dataset/images/split and dataset/labels/split
+    # So if image is dataset/something/split/img.jpg, label might be dataset/labels/split/img.txt
+    # Let's assume the parent of image_path.parent is where 'images' and 'labels' might be siblings.
+    # if image_path.parent.name.lower() == 'images':
+    #    label_dir = image_path.parent.parent / 'labels'
+    # else:
+    #    label_dir = image_path.parent.parent / 'labels' / image_path.parent.name
+    # This heuristic is getting complicated. The primary method should be replacing 'images' with 'labels'.
+    # A simpler robust fallback if 'images' isn't in path: assume labels are next to image's parent dir
+    # e.g. parent/images_dir/img.jpg -> parent/labels_dir/img.txt
+    # For now, rely on the 'images' replacement. If that fails, users might need to ensure their structure matches.
+    # A simpler fallback: assume labels dir is sibling to image dir's parent, with same name as image dir's parent
+    # e.g. path/to/DATASET/subset/images -> path/to/DATASET/subset/labels
+    # This means label_file = image_path.parent.with_name('labels') / (image_path.stem + '.txt')
+    # This is too simple. The "replace 'images' with 'labels'" is the most common.
+
+    # Final simple fallback: look for a "labels" folder parallel to the image's folder
+    label_path = image_path.parent.parent / "labels" / image_path.parent.name / (image_path.stem + '.txt')
+    if not label_path.exists(): # One more common: if image is dataset/images/split/img.jpg -> dataset/labels/split/img.txt
+        label_path = dataset_root_for_label_search / "labels" / image_path.relative_to(dataset_root_for_label_search).parent.name / (image_path.stem + ".txt")
+        if not label_path.parent.is_dir(): # Check if intermediate "labels" and split name dir exists
+             # If image in dataset/images_A/img.jpg -> expect dataset/labels_A/img.txt
+             label_path = image_path.parent.with_name(image_path.parent.name.lower().replace("images", "labels")) / (image_path.stem + ".txt")
+
+
+    logger.debug(f"Derived label path for {image_path} as {label_path}")
+    return label_path
+
+
 def load_ground_truth_data(
     data_yaml_path: str, use_test_split: bool
 ) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
@@ -17,105 +100,117 @@ def load_ground_truth_data(
     Returns a list of image file paths for the validation/test set
     and a dictionary mapping image paths to their ground truth annotations.
     """
-    # This map is now local and will be returned.
+    # This map is local and will be returned.
     local_ground_truth_map: Dict[str, Dict[str, Any]] = {}
-    image_files_list: List[str] = [] # Renamed from val_image_files for clarity
+    image_files_list: List[str] = []
 
-    if not data_yaml_path: # Should be caught by arg parsing, but good to have
-        logger.warning("No data.yaml path provided to load_ground_truth_data.")
+    yaml_file_path = Path(data_yaml_path)
+    if not yaml_file_path.is_file():
+        logger.error(f"Data YAML file not found: {data_yaml_path}")
         return image_files_list, local_ground_truth_map
 
     try:
-        with open(data_yaml_path, 'r') as f:
+        with open(yaml_file_path, 'r') as f:
             data_config = yaml.safe_load(f)
     except Exception as e:
-        logger.error(f"Error loading or parsing YAML file '{data_yaml_path}': {e}")
+        logger.error(f"Error loading or parsing YAML file '{yaml_file_path}': {e}")
         return image_files_list, local_ground_truth_map
 
     split_key = 'test' if use_test_split else 'val'
-    labels_split_key = 'test_labels' if use_test_split else 'val_labels'
-
-    if split_key not in data_config:
-        logger.error(f"Data YAML ('{data_yaml_path}') must contain a '{split_key}' key specifying the {split_key} image directory.")
+    if split_key not in data_config or not data_config[split_key]:
+        logger.error(f"Data YAML ('{yaml_file_path}') must contain a non-empty '{split_key}' key specifying the {split_key} image source(s).")
         return image_files_list, local_ground_truth_map
     
-    yaml_parent = Path(data_yaml_path).parent
-    dataset_root = Path(data_config.get('path', yaml_parent)).resolve()
-    
-    image_dir_rel_path = data_config[split_key]
-    image_dir = (dataset_root / image_dir_rel_path).resolve()
+    # Dataset root: 'path' in YAML, or YAML's parent directory
+    dataset_root = Path(data_config.get('path', yaml_file_path.parent)).resolve()
+    logger.info(f"Using dataset root: {dataset_root}")
 
-    label_dir: Optional[Path] = None
-    label_dir_rel_options = []
+    image_source_definition = data_config[split_key]
+    collected_image_paths: List[Path] = []
 
-    # Try explicit label path first if provided for the current split
-    if labels_split_key in data_config and data_config[labels_split_key]:
-         label_dir_rel_options.append(Path(data_config[labels_split_key]))
-    
-    # Common pattern: 'labels' directory relative to 'images' directory or dataset structure
-    # Option 1: replace 'images' with 'labels' in the image directory path
-    # e.g., if image_dir_rel_path is 'path/to/project/images/val2017', try 'path/to/project/labels/val2017'
-    if "images" in str(image_dir_rel_path):
-        label_dir_rel_options.append(Path(str(image_dir_rel_path).replace("images", "labels", 1)))
-    
-    # Option 2: 'labels' directory as a sibling to the image directory's parent folder, with the same split name
-    # e.g., if image_dir is '../datasets/coco/images/val', try '../datasets/coco/labels/val'
-    label_dir_rel_options.append(Path(image_dir_rel_path).parent / "labels" / Path(image_dir_rel_path).name)
-
-    # Option 3: 'labels' directory directly under dataset_root, with the same split name
-    # e.g., if image_dir_rel_path is 'images/val', try 'labels/val' from dataset_root
-    label_dir_rel_options.append(Path("labels") / Path(image_dir_rel_path).name)
-
-
-    for rel_path_option in label_dir_rel_options:
-        potential_label_dir = (dataset_root / rel_path_option).resolve()
-        if potential_label_dir.exists() and potential_label_dir.is_dir():
-            label_dir = potential_label_dir
-            break
-    
-    if not label_dir:
-        logger.error(f"Could not automatically determine or find label directory for images in {image_dir}.")
-        logger.info(f"Attempted relative label paths from dataset root '{dataset_root}': {[str(opt) for opt in label_dir_rel_options]}")
-        return image_files_list, local_ground_truth_map
-
-    logger.info(f"Loading {split_key} images from: {image_dir}")
-    logger.info(f"Expecting labels in: {label_dir}")
-
-    for img_file_path_obj in sorted(image_dir.rglob('*')):
-        if img_file_path_obj.suffix.lower() in IMAGE_EXTENSIONS:
-            abs_img_path_str = str(img_file_path_obj.resolve())
-            
-            img = cv2.imread(abs_img_path_str)
-            if img is None:
-                logger.warning(f"Could not read image {abs_img_path_str}. Skipping.")
+    if isinstance(image_source_definition, str):
+        source_path_str = image_source_definition.strip()
+        if source_path_str.lower().endswith(".txt"):
+            txt_file_path = _resolve_image_path(source_path_str, dataset_root, yaml_file_path.parent)
+            if txt_file_path and txt_file_path.is_file():
+                logger.info(f"Reading image list from: {txt_file_path}")
+                with open(txt_file_path, 'r') as f:
+                    for line in f:
+                        img_path_in_txt = line.strip()
+                        if not img_path_in_txt: continue
+                        resolved_img_path = _resolve_image_path(img_path_in_txt, dataset_root, txt_file_path.parent)
+                        if resolved_img_path and resolved_img_path.is_file():
+                            collected_image_paths.append(resolved_img_path)
+                        else:
+                            logger.warning(f"Image path from {txt_file_path.name}: '{img_path_in_txt}' not found or not a file (tried resolving against {dataset_root} and {txt_file_path.parent}).")
+            else:
+                logger.error(f"Image list file not found or not a file: {source_path_str} (resolved to {txt_file_path})")
+        else: # Single directory
+            single_image_dir = _resolve_image_path(source_path_str, dataset_root, yaml_file_path.parent)
+            if single_image_dir and single_image_dir.is_dir():
+                logger.info(f"Scanning for images in directory: {single_image_dir}")
+                for item in sorted(single_image_dir.rglob('*')):
+                    if item.suffix.lower() in IMAGE_EXTENSIONS:
+                        collected_image_paths.append(item.resolve())
+            else:
+                logger.error(f"Image directory not found or not a directory: {source_path_str} (resolved to {single_image_dir})")
+    elif isinstance(image_source_definition, list): # List of directories
+        for dir_path_str_item in image_source_definition:
+            if not isinstance(dir_path_str_item, str):
+                logger.warning(f"Skipping non-string item in image directory list: {dir_path_str_item}")
                 continue
-            h, w = img.shape[:2]
-            image_files_list.append(abs_img_path_str) 
+            current_image_dir = _resolve_image_path(dir_path_str_item.strip(), dataset_root, yaml_file_path.parent)
+            if current_image_dir and current_image_dir.is_dir():
+                logger.info(f"Scanning for images in directory: {current_image_dir}")
+                for item in sorted(current_image_dir.rglob('*')):
+                    if item.suffix.lower() in IMAGE_EXTENSIONS:
+                        collected_image_paths.append(item.resolve())
+            else:
+                logger.warning(f"Image directory from list not found or not a directory: {dir_path_str_item} (resolved to {current_image_dir})")
+    else:
+        logger.error(f"Unsupported format for '{split_key}' images in YAML: {type(image_source_definition)}. Expected str or list.")
+        return image_files_list, local_ground_truth_map
 
-            label_file = label_dir / (img_file_path_obj.stem + '.txt')
-            current_image_gts: Dict[str, Any] = {'labels': [], 'width': w, 'height': h}
-            if label_file.exists():
-                with open(label_file, 'r') as lf:
-                    for line in lf:
-                        parts = line.strip().split()
-                        if len(parts) >= 5:
-                            try:
-                                class_id = int(parts[0])
-                                cx, cy, bw, bh = map(float, parts[1:5])
-                                x1 = (cx - bw / 2) * w
-                                y1 = (cy - bh / 2) * h
-                                x2 = (cx + bw / 2) * w
-                                y2 = (cy + bh / 2) * h
-                                current_image_gts['labels'].append({'class_id': class_id, 'bbox_abs': [x1, y1, x2, y2]})
-                            except ValueError:
-                                logger.warning(f"Skipping malformed line in label file {label_file}: '{line.strip()}'")
-            local_ground_truth_map[abs_img_path_str] = current_image_gts
+    if not collected_image_paths:
+        logger.error(f"No image paths were successfully collected for the '{split_key}' split.")
+        return image_files_list, local_ground_truth_map
+
+    logger.info(f"Collected {len(collected_image_paths)} image paths for '{split_key}' split. Processing for labels and dimensions.")
+    
+    for img_path_obj in collected_image_paths:
+        abs_img_path_str = str(img_path_obj)
+        img = cv2.imread(abs_img_path_str)
+        if img is None:
+            logger.warning(f"Could not read image {abs_img_path_str}. Skipping.")
+            continue
+        h, w = img.shape[:2]
+        image_files_list.append(abs_img_path_str)
+
+        label_file = _derive_label_path(img_path_obj, dataset_root) # Use dataset_root as a base for label search context
+        
+        current_image_gts: Dict[str, Any] = {'labels': [], 'width': w, 'height': h}
+        if label_file.exists() and label_file.is_file():
+            with open(label_file, 'r') as lf:
+                for line in lf:
+                    parts = line.strip().split()
+                    if len(parts) >= 5:
+                        try:
+                            class_id = int(parts[0])
+                            cx, cy, bw, bh = map(float, parts[1:5])
+                            x1 = (cx - bw / 2) * w; y1 = (cy - bh / 2) * h
+                            x2 = (cx + bw / 2) * w; y2 = (cy + bh / 2) * h
+                            current_image_gts['labels'].append({'class_id': class_id, 'bbox_abs': [x1, y1, x2, y2]})
+                        except ValueError:
+                            logger.warning(f"Skipping malformed line in label file {label_file}: '{line.strip()}'")
+        # else:
+            # logger.debug(f"Label file not found for {abs_img_path_str} at expected location {label_file}")
+
+        local_ground_truth_map[abs_img_path_str] = current_image_gts
             
     if not image_files_list:
-        logger.error(f"No {split_key} images found or readable in {image_dir} or its subdirectories.")
+        logger.error(f"No images were successfully processed for the '{split_key}' split (e.g., all unreadable).")
     
-    logger.info(f"Processed {len(image_files_list)} images and {len(local_ground_truth_map)} ground truth entries for {split_key} split.")
-
+    logger.info(f"Finished processing. Found {len(image_files_list)} readable images and {len(local_ground_truth_map)} ground truth entries for '{split_key}' split.")
     return image_files_list, local_ground_truth_map
 
 
