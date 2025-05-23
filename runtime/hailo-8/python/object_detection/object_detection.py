@@ -139,7 +139,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "-s", "--save_stream_output",
         action="store_true",
-        help="Save the output of the inference from a stream."
+        help="Save annotated output. For image inputs, saves annotated images. For video/camera streams, saves an annotated video."
     )
     parser.add_argument(
         "--data",
@@ -225,28 +225,41 @@ def preprocess(
             input_queue.put(([f.copy() for f in frames], [pf.copy() for pf in processed_frames]))
     input_queue.put(None)
 
-# Populates the global `all_hailo_predictions`
+
+# Populates the global `all_hailo_predictions` if run_validation is True
+# and appends the current image's predictions to it.
+# This is used for validation metrics calculation.
+# The function also handles visualization and saving output.
+# It draws the detections on the original image and saves it if the save_output_flag is True.
+# If the input is a stream, it saves the output as a video file.
+# If the input is an image, it saves the output as an image file.
+# The function also handles the cleanup of resources after processing.
+# The function is designed to run in a separate thread.
+# It continuously checks the output queue for results and processes them.
+# The function will exit when it receives a None value in the output queue.
+# The function also handles the display of the output in a window.
+# It uses OpenCV to show the output in a window named "Output".
+# The function will exit if the user presses 'q'.
 def postprocess(
     output_queue: queue.Queue,
     cap: Optional[cv2.VideoCapture],
-    save_stream_output: bool,
+    save_output_flag: bool, # This will be args.save_stream_output, now treated as a general save flag
     utils: ObjectDetectionUtils,
-    run_validation: bool, # Note: this 'run_validation' flag comes from infer()
-    model_net_height: int, 
+    run_validation: bool, # This purely controls metrics data accumulation
+    model_net_height: int,
     model_net_width: int
 ) -> None:
-    global all_hailo_predictions # This function still populates the global list
-    image_counter = 0 
-    output_path_obj = Path('output') 
-    out_video_writer = None
-    if cap is None and not run_validation: 
-        output_path_obj.mkdir(exist_ok=True)
+    global all_hailo_predictions
+    image_counter = 0
+    output_path_obj = Path('output')
+    out_video_writer: Optional[cv2.VideoWriter] = None # Type hint for clarity
 
     while True:
         result_item = output_queue.get()
         if result_item is None:
             break
-        original_frame_meta, infer_results = result_item 
+
+        original_frame_meta, infer_results = result_item
         original_cv_image = original_frame_meta['frame']
         image_path = original_frame_meta.get('path', f"processed_item_{image_counter}")
         image_counter += 1
@@ -257,10 +270,9 @@ def postprocess(
         
         raw_detections_on_model_input = utils.extract_detections(infer_results, threshold=0.001)
 
-        # The `run_validation` flag passed to this function determines if we populate `all_hailo_predictions`.
-        # The decision to populate `all_hailo_predictions` should solely depend on `run_validation`.
-        # The filtering for metrics against GT map will happen in `calculate_and_print_metrics_table`.
-        if run_validation: # If in validation mode, always try to process and store predictions
+        # --- 1. Accumulate predictions if in validation mode ---
+        # This is independent of saving output.
+        if run_validation:
             img_h, img_w = original_cv_image.shape[:2]
             scale_ratio = min(model_net_width / img_w, model_net_height / img_h) if img_w > 0 and img_h > 0 else 1.0
             new_scaled_img_w = int(img_w * scale_ratio)
@@ -295,32 +307,50 @@ def postprocess(
                 'detections': current_image_pred_list
             })
 
-        show_output_anyway = cap is not None
-        if show_output_anyway or (not run_validation and not save_stream_output) :
-            frame_with_detections = utils.draw_detections(
+        # --- 2. Handle visualization (drawing) and saving output ---
+        # We need to draw detections if:
+        #   a) We are saving the output (save_output_flag is True).
+        #   b) It's a live stream (cap is not None), because we always imshow for streams.
+        frame_to_process: Optional[np.ndarray] = None # To hold the annotated frame
+        if save_output_flag or (cap is not None):
+            frame_to_process = utils.draw_detections(
                 raw_detections_on_model_input, original_cv_image.copy()
             )
-            if cap is not None:
-                cv2.imshow("Output", frame_with_detections)
-                if save_stream_output:
-                    if out_video_writer is None:
-                        output_path_obj.mkdir(exist_ok=True)
-                        frame_h_vid, frame_w_vid = frame_with_detections.shape[:2]
-                        fourcc = cv2.VideoWriter_fourcc(*'XVID')
-                        fps_vid = cap.get(cv2.CAP_PROP_FPS) if cap.get(cv2.CAP_PROP_FPS) > 0 else 20.0
-                        out_video_writer = cv2.VideoWriter(str(output_path_obj / 'output_video.avi'), fourcc, fps_vid, (frame_w_vid, frame_h_vid))
-                    out_video_writer.write(frame_with_detections)
-            else: 
-                 if not run_validation:
-                    cv2.imwrite(str(output_path_obj / f"output_{Path(image_path).stem}.png"), frame_with_detections)
-        
+
+        # Display if it's a live stream and we have a frame
+        if cap is not None and frame_to_process is not None:
+            cv2.imshow("Output", frame_to_process)
+
+        # Save the output if the save flag is enabled and we have a frame
+        if save_output_flag and frame_to_process is not None:
+            output_path_obj.mkdir(exist_ok=True) # Ensure output directory exists
+
+            if cap is not None: # Stream input: save to video
+                if out_video_writer is None:
+                    frame_h_vid, frame_w_vid = frame_to_process.shape[:2]
+                    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                    fps_val = cap.get(cv2.CAP_PROP_FPS)
+                    fps_vid = fps_val if fps_val and fps_val > 0 else 20.0 # Handle potential None from cap.get
+                    video_output_path = str(output_path_obj / 'output_video.avi')
+                    out_video_writer = cv2.VideoWriter(video_output_path, fourcc, fps_vid, (frame_w_vid, frame_h_vid))
+                    logger.info(f"Saving output video to: {video_output_path}")
+                
+                if out_video_writer: # Check if writer was successfully initialized
+                    out_video_writer.write(frame_to_process)
+            else: # Image input (cap is None): save as individual image
+                image_output_path = str(output_path_obj / f"output_{Path(image_path).stem}.png")
+                cv2.imwrite(image_output_path, frame_to_process)
+                # logger.info(f"Saved annotated image to: {image_output_path}") # Optional: log saved images
+
+        # --- 3. UI handling for quit ---
         if cv2.waitKey(1) & 0xFF == ord('q'):
             if cap: cap.release()
             if out_video_writer: out_video_writer.release()
             cv2.destroyAllWindows()
             logger.info("User quit.")
-            break 
+            break
             
+    # Cleanup after loop
     if out_video_writer:
         out_video_writer.release()
     cv2.destroyAllWindows()
