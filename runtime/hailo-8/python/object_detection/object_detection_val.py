@@ -1,5 +1,8 @@
 # object_detection_val.py
 from pathlib import Path
+import sys
+import gc # For garbage collection, to get a slightly cleaner memory reading
+# import psutil # For more accurate process memory, if available and desired later
 from typing import List, Dict, Tuple, Any, Optional
 
 import cv2
@@ -8,6 +11,59 @@ import yaml
 from loguru import logger
 
 from utils import IMAGE_EXTENSIONS
+
+
+def get_approx_deep_size(obj, seen_ids=None):
+    """
+    Recursively estimates the approximate deep size of an object in bytes.
+    Handles basic types, strings, dicts, lists, tuples, sets.
+    Tries to avoid double counting and circular references.
+    """
+    if seen_ids is None:
+        seen_ids = set()
+
+    if id(obj) in seen_ids:
+        return 0
+
+    size = sys.getsizeof(obj)
+    seen_ids.add(id(obj))
+
+    if isinstance(obj, dict):
+        size += sum(get_approx_deep_size(v, seen_ids) + get_approx_deep_size(k, seen_ids) for k, v in obj.items())
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        size += sum(get_approx_deep_size(i, seen_ids) for i in obj)
+    
+    return size
+
+
+def log_collection_memory_usage(variable_name: str, collection: Any, logger_obj):
+    """Logs the number of items and approximate memory usage of a collection."""
+    if collection is None:
+        logger_obj.info(f"Memory for '{variable_name}': Collection is None.")
+        return
+
+    try:
+        num_items = len(collection)
+    except TypeError:
+        num_items = "N/A (not a sized collection)"
+
+    # Optional: Trigger garbage collection before measuring for a potentially cleaner number,
+    # though this might impact performance if called very frequently.
+    # gc.collect() 
+
+    approx_size_bytes = get_approx_deep_size(collection)
+    approx_size_mb = approx_size_bytes / (1024 * 1024)
+    logger_obj.info(f"Collection '{variable_name}': Items = {num_items}, Approx. Memory = {approx_size_mb:.2f} MB")
+
+    # If psutil is available, you can also log process memory:
+    # try:
+    #     import psutil
+    #     process = psutil.Process(os.getpid())
+    #     process_mem_mb = process.memory_info().rss / (1024 * 1024)
+    #     logger_obj.info(f"Process Memory (RSS): {process_mem_mb:.2f} MB after populating '{variable_name}'")
+    # except ImportError:
+    #     pass # psutil not available
+
 
 def _resolve_image_path(path_str: str, primary_root: Path, secondary_root: Optional[Path] = None) -> Optional[Path]:
     """Helper to resolve image paths, trying primary_root then optionally secondary_root."""
