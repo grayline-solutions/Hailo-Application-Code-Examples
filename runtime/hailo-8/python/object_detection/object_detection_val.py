@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 import yaml
 from loguru import logger
+from tqdm import tqdm
 
 from utils import IMAGE_EXTENSIONS
 
@@ -151,12 +152,6 @@ def _derive_label_path(image_path: Path, dataset_root_for_label_search: Path) ->
 def load_ground_truth_data(
     data_yaml_path: str, use_test_split: bool
 ) -> Tuple[List[str], Dict[str, Dict[str, Any]]]:
-    """
-    Loads ground truth data from the specified data.yaml file.
-    Returns a list of image file paths for the validation/test set
-    and a dictionary mapping image paths to their ground truth annotations.
-    """
-    # This map is local and will be returned.
     local_ground_truth_map: Dict[str, Dict[str, Any]] = {}
     image_files_list: List[str] = []
 
@@ -174,15 +169,14 @@ def load_ground_truth_data(
 
     split_key = 'test' if use_test_split else 'val'
     if split_key not in data_config or not data_config[split_key]:
-        logger.error(f"Data YAML ('{yaml_file_path}') must contain a non-empty '{split_key}' key specifying the {split_key} image source(s).")
+        logger.error(f"Data YAML ('{yaml_file_path}') must contain a non-empty '{split_key}' key.")
         return image_files_list, local_ground_truth_map
     
-    # Dataset root: 'path' in YAML, or YAML's parent directory
     dataset_root = Path(data_config.get('path', yaml_file_path.parent)).resolve()
-    logger.info(f"Using dataset root: {dataset_root}")
+    logger.info(f"Using dataset root: {dataset_root} for {split_key} split.")
 
     image_source_definition = data_config[split_key]
-    collected_image_paths: List[Path] = []
+    collected_raw_image_paths: List[Path] = [] # Store Path objects first
 
     if isinstance(image_source_definition, str):
         source_path_str = image_source_definition.strip()
@@ -191,59 +185,66 @@ def load_ground_truth_data(
             if txt_file_path and txt_file_path.is_file():
                 logger.info(f"Reading image list from: {txt_file_path}")
                 with open(txt_file_path, 'r') as f:
-                    for line in f:
-                        img_path_in_txt = line.strip()
-                        if not img_path_in_txt: continue
-                        resolved_img_path = _resolve_image_path(img_path_in_txt, dataset_root, txt_file_path.parent)
-                        if resolved_img_path and resolved_img_path.is_file():
-                            collected_image_paths.append(resolved_img_path)
-                        else:
-                            logger.warning(f"Image path from {txt_file_path.name}: '{img_path_in_txt}' not found or not a file (tried resolving against {dataset_root} and {txt_file_path.parent}).")
+                    lines = [line.strip() for line in f if line.strip()]
+                for line_path in tqdm(lines, desc=f"Resolving images from {txt_file_path.name}", unit="path"):
+                    resolved_img_path = _resolve_image_path(line_path, dataset_root, txt_file_path.parent)
+                    if resolved_img_path and resolved_img_path.is_file():
+                        collected_raw_image_paths.append(resolved_img_path)
+                    else:
+                        logger.warning(f"Path from {txt_file_path.name}: '{line_path}' -> '{resolved_img_path}' not found or not a file.")
             else:
-                logger.error(f"Image list file not found or not a file: {source_path_str} (resolved to {txt_file_path})")
-        else: # Single directory
+                logger.error(f"Image list file not found: {txt_file_path} (from '{source_path_str}')")
+        else: 
             single_image_dir = _resolve_image_path(source_path_str, dataset_root, yaml_file_path.parent)
             if single_image_dir and single_image_dir.is_dir():
                 logger.info(f"Scanning for images in directory: {single_image_dir}")
-                for item in sorted(single_image_dir.rglob('*')):
-                    if item.suffix.lower() in IMAGE_EXTENSIONS:
-                        collected_image_paths.append(item.resolve())
+                # Glob first to get a total for tqdm
+                glob_paths = list(single_image_dir.rglob('*'))
+                for item in tqdm(glob_paths, desc=f"Scanning {single_image_dir.name}", unit="file"):
+                    if item.suffix.lower() in IMAGE_EXTENSIONS and item.is_file():
+                        collected_raw_image_paths.append(item.resolve())
             else:
-                logger.error(f"Image directory not found or not a directory: {source_path_str} (resolved to {single_image_dir})")
-    elif isinstance(image_source_definition, list): # List of directories
-        for dir_path_str_item in image_source_definition:
+                logger.error(f"Image directory not found: {single_image_dir} (from '{source_path_str}')")
+    elif isinstance(image_source_definition, list):
+        for dir_idx, dir_path_str_item in enumerate(tqdm(image_source_definition, desc="Processing source directories", unit="dir")):
             if not isinstance(dir_path_str_item, str):
                 logger.warning(f"Skipping non-string item in image directory list: {dir_path_str_item}")
                 continue
             current_image_dir = _resolve_image_path(dir_path_str_item.strip(), dataset_root, yaml_file_path.parent)
             if current_image_dir and current_image_dir.is_dir():
-                logger.info(f"Scanning for images in directory: {current_image_dir}")
-                for item in sorted(current_image_dir.rglob('*')):
-                    if item.suffix.lower() in IMAGE_EXTENSIONS:
-                        collected_image_paths.append(item.resolve())
+                # Glob first for tqdm total
+                glob_paths = list(current_image_dir.rglob('*'))
+                for item in tqdm(glob_paths, desc=f"Scanning {current_image_dir.name}", unit="file", leave=False):
+                    if item.suffix.lower() in IMAGE_EXTENSIONS and item.is_file():
+                        collected_raw_image_paths.append(item.resolve())
             else:
-                logger.warning(f"Image directory from list not found or not a directory: {dir_path_str_item} (resolved to {current_image_dir})")
+                logger.warning(f"Image directory from list not found: {current_image_dir} (from '{dir_path_str_item}')")
     else:
-        logger.error(f"Unsupported format for '{split_key}' images in YAML: {type(image_source_definition)}. Expected str or list.")
+        logger.error(f"Unsupported format for '{split_key}' in YAML: {type(image_source_definition)}.")
         return image_files_list, local_ground_truth_map
 
-    if not collected_image_paths:
+    if not collected_raw_image_paths:
         logger.error(f"No image paths were successfully collected for the '{split_key}' split.")
         return image_files_list, local_ground_truth_map
-
-    logger.info(f"Collected {len(collected_image_paths)} image paths for '{split_key}' split. Processing for labels and dimensions.")
     
-    for img_path_obj in collected_image_paths:
+    # Remove duplicates that might arise from multiple listings/globs, preserving order somewhat
+    unique_collected_image_paths = sorted(list(set(collected_raw_image_paths)), key=lambda p: str(p))
+    if len(unique_collected_image_paths) < len(collected_raw_image_paths):
+        logger.info(f"Removed {len(collected_raw_image_paths) - len(unique_collected_image_paths)} duplicate image paths.")
+    
+    log_collection_memory_usage("collected_image_paths (Path objects)", unique_collected_image_paths, logger)
+
+    logger.info(f"Processing {len(unique_collected_image_paths)} unique image paths for labels and dimensions.")
+    for img_path_obj in tqdm(unique_collected_image_paths, desc=f"Loading {split_key} GT data", unit="image"):
         abs_img_path_str = str(img_path_obj)
-        img = cv2.imread(abs_img_path_str)
+        img = cv2.imread(abs_img_path_str) # This loads the image to get dimensions
         if img is None:
-            logger.warning(f"Could not read image {abs_img_path_str}. Skipping.")
+            logger.warning(f"Could not read image {abs_img_path_str} during GT loading. Skipping.")
             continue
         h, w = img.shape[:2]
-        image_files_list.append(abs_img_path_str)
+        image_files_list.append(abs_img_path_str) # Add to final list only if readable
 
-        label_file = _derive_label_path(img_path_obj, dataset_root) # Use dataset_root as a base for label search context
-        
+        label_file = _derive_label_path(img_path_obj, dataset_root)
         current_image_gts: Dict[str, Any] = {'labels': [], 'width': w, 'height': h}
         if label_file.exists() and label_file.is_file():
             with open(label_file, 'r') as lf:
@@ -260,13 +261,15 @@ def load_ground_truth_data(
                             logger.warning(f"Skipping malformed line in label file {label_file}: '{line.strip()}'")
         # else:
             # logger.debug(f"Label file not found for {abs_img_path_str} at expected location {label_file}")
-
         local_ground_truth_map[abs_img_path_str] = current_image_gts
             
     if not image_files_list:
-        logger.error(f"No images were successfully processed for the '{split_key}' split (e.g., all unreadable).")
+        logger.error(f"No images were successfully processed (e.g., all unreadable) for the '{split_key}' split.")
     
-    logger.info(f"Finished processing. Found {len(image_files_list)} readable images and {len(local_ground_truth_map)} ground truth entries for '{split_key}' split.")
+    logger.info(f"Finished GT loading. Found {len(image_files_list)} readable images.")
+    log_collection_memory_usage(f"{split_key}_image_files_list (paths)", image_files_list, logger)
+    log_collection_memory_usage(f"{split_key}_ground_truth_map (GT data)", local_ground_truth_map, logger)
+    
     return image_files_list, local_ground_truth_map
 
 
@@ -365,28 +368,24 @@ def calculate_and_print_metrics_table(
 ) -> None:
     num_classes = len(class_names)
     class_summary_metrics: List[Dict[str, Any]] = [] 
+    all_total_gt_instances_overall=0; all_total_images_with_any_gt_set=set()
+    all_aps_50_list:List[float]=[]; all_aps_50_95_list:List[float]=[]
+    overall_tp_sum_for_pr=0; overall_relevant_preds_sum_for_pr=0; overall_gt_sum_for_pr=0
 
-    all_total_gt_instances_overall = 0
-    all_total_images_with_any_gt_set = set()
-    
-    all_aps_50_list: List[float] = []
-    all_aps_50_95_list: List[float] = []
-    
-    # For more accurate 'all' P/R: sum TPs, (TPs+FPs), and GTs across all classes
-    overall_tp_sum_for_pr = 0
-    overall_relevant_preds_sum_for_pr = 0 # This is sum of (TP+FP) for each class for P calculation
-    overall_gt_sum_for_pr = 0
-
-    for class_id in range(num_classes):
+    logger.info("Starting metrics calculation per class...")
+    # --- TQDM for the main loop over classes ---
+    for class_id in tqdm(range(num_classes), desc="Calculating Class Metrics", unit="class"):
         class_name = class_names[class_id]
-        
         current_class_predictions: List[Dict[str, Any]] = []
         current_class_ground_truths: List[Dict[str, Any]] = []
-        
         images_containing_gt_for_class_set = set()
         num_gt_instances_this_class = 0
 
-        for pred_item in hailo_preds_data:
+        # Aggregate predictions and GTs for the current class
+        # This loop iterates all accumulated predictions for *each class*.
+        # If tqdm is desired here, ensure it's not too verbose.
+        # It might be better to log memory *after* this aggregation for the class.
+        for pred_item in hailo_preds_data: # This is iterating all_hailo_predictions
             img_path = pred_item['image_path']
             for det in pred_item['detections']:
                 if det['class_id'] == class_id:
@@ -396,22 +395,22 @@ def calculate_and_print_metrics_table(
                 gt_image_info = gt_map[img_path]
                 has_gt_in_this_image_for_class_this_time = False
                 for gt_label in gt_image_info['labels']:
-                    if gt_label['class_id'] is not None: # Any GT for this image
-                        all_total_images_with_any_gt_set.add(img_path)
+                    if gt_label['class_id'] is not None: all_total_images_with_any_gt_set.add(img_path)
                     if gt_label['class_id'] == class_id:
                         current_class_ground_truths.append(gt_label)
                         num_gt_instances_this_class += 1
                         has_gt_in_this_image_for_class_this_time = True
-                if has_gt_in_this_image_for_class_this_time:
-                    images_containing_gt_for_class_set.add(img_path)
+                if has_gt_in_this_image_for_class_this_time: images_containing_gt_for_class_set.add(img_path)
+        
+        # Log memory for per-class temporary collections (can be verbose, enable if needed)
+        # log_collection_memory_usage(f"preds_cls_{class_name}", current_class_predictions, logger)
+        # log_collection_memory_usage(f"GTs_cls_{class_name}", current_class_ground_truths, logger)
         
         all_total_gt_instances_overall += num_gt_instances_this_class
-
         p50, r50, ap50, map50_95_class = 0.0, 0.0, 0.0, 0.0
         
         if num_gt_instances_this_class == 0:
-            # If predictions exist, P=0. If no preds, P=0 (or 1, but 0 for consistency if instances=0).
-            p50 = 0.0 if current_class_predictions else 0.0 
+            p50 = 0.0 # No GTs, P=0 (as no TPs possible)
         else:
             ap50_calc, p50_calc, r50_calc, tp_this_class_for_pr = calculate_ap_for_class(
                 current_class_predictions, current_class_ground_truths, 0.50
@@ -419,14 +418,17 @@ def calculate_and_print_metrics_table(
             ap50, p50, r50 = ap50_calc, p50_calc, r50_calc
             
             overall_tp_sum_for_pr += tp_this_class_for_pr
-            if p50 > 1e-9: # Calculate (TP+FP) for this class
+            if p50 > 1e-9: 
                 overall_relevant_preds_sum_for_pr += tp_this_class_for_pr / p50
-            elif current_class_predictions: # If P=0 but predictions exist, they are all FPs
+            elif current_class_predictions: 
                 overall_relevant_preds_sum_for_pr += len(current_class_predictions)
             overall_gt_sum_for_pr += num_gt_instances_this_class
 
+            # --- TQDM for IoU threshold loop for mAP50-95 --- (can be nested, might be too much)
+            # Let's keep it simple for now and not add tqdm here unless this specific part is identified as a huge bottleneck visually.
             aps_for_map50_95_range: List[float] = []
-            for iou_thresh_int in range(50, 100, 5):
+            # for iou_thresh_int in tqdm(range(50, 100, 5), desc=f"mAP50-95 IoUs for {class_name[:10]}..", leave=False, unit="IoU"):
+            for iou_thresh_int in range(50, 100, 5): # No inner tqdm for now
                 iou_val = iou_thresh_int / 100.0
                 ap_at_iou, _, _, _ = calculate_ap_for_class(
                     current_class_predictions, current_class_ground_truths, iou_val
@@ -435,15 +437,16 @@ def calculate_and_print_metrics_table(
             map50_95_class = np.mean(aps_for_map50_95_range) if aps_for_map50_95_range else 0.0
         
         class_summary_metrics.append({
-            'name': class_name,
-            'images_gt': len(images_containing_gt_for_class_set),
-            'instances_gt': num_gt_instances_this_class,
-            'P': p50, 'R': r50, 'mAP50': ap50, 'mAP50-95': map50_95_class
+            'name': class_name, 'images_gt': len(images_containing_gt_for_class_set),
+            'instances_gt': num_gt_instances_this_class, 'P': p50, 'R': r50,
+            'mAP50': ap50, 'mAP50-95': map50_95_class
         })
         
         if num_gt_instances_this_class > 0:
             all_aps_50_list.append(ap50)
             all_aps_50_95_list.append(map50_95_class)
+            
+    log_collection_memory_usage("class_summary_metrics (metrics list)", class_summary_metrics, logger)
 
     num_total_images_with_any_gt = len(all_total_images_with_any_gt_set)
     
