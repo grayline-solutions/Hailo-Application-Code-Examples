@@ -165,23 +165,24 @@ def parse_args() -> argparse.Namespace:
     return args
 
 
-def preprocess_from_image_list(
-    images_with_paths: List[Dict[str, Any]],
-    batch_size: int,
-    input_queue: queue.Queue,
-    model_input_width: int,
-    model_input_height: int,
-    utils: ObjectDetectionUtils
-) -> None:
-    num_batches = (len(images_with_paths) + batch_size - 1) // batch_size
-    for batch_meta in tqdm(divide_list_to_batches(images_with_paths, batch_size), total=num_batches, desc="Preprocessing Batches", unit="batch"):
-        original_frames_with_ids: List[Dict[str, Any]] = []
-        processed_frames: List[np.ndarray] = []
-        for item in batch_meta:
-            original_frames_with_ids.append({'path': item['path'], 'frame': item['cv_image']})
-            processed_frame = utils.preprocess(item['cv_image'], model_input_width, model_input_height)
-            processed_frames.append(processed_frame)
-        input_queue.put((original_frames_with_ids, processed_frames))
+# def preprocess_from_image_list(
+#     images_with_paths: List[Dict[str, Any]],
+#     batch_size: int,
+#     input_queue: queue.Queue,
+#     model_input_width: int,
+#     model_input_height: int,
+#     utils: ObjectDetectionUtils
+# ) -> None:
+#     num_batches = (len(images_with_paths) + batch_size - 1) // batch_size
+#     for batch_meta in tqdm(divide_list_to_batches(images_with_paths, batch_size), total=num_batches, desc="Preprocessing Batches", unit="batch"):
+#         original_frames_with_ids: List[Dict[str, Any]] = []
+#         processed_frames: List[np.ndarray] = []
+#         for item in batch_meta:
+#             original_frames_with_ids.append({'path': item['path'], 'frame': item['cv_image']})
+#             processed_frame = utils.preprocess(item['cv_image'], model_input_width, model_input_height)
+#             processed_frames.append(processed_frame)
+#         input_queue.put((original_frames_with_ids, processed_frames))
+
 
 def preprocess(
     image_paths: List[str], 
@@ -191,47 +192,80 @@ def preprocess(
     model_net_width: int, 
     model_net_height: int, 
     utils: ObjectDetectionUtils
-    # total_images_for_preprocess: Optional[int] = None # This was passed from infer; image_paths is more direct here
+    # total_images_for_preprocess: Optional[int] = None # This arg is not strictly needed here
+                                                        # as len(image_paths) can be used for files
 ) -> None:
-    if cap is None: 
-        images_to_load_meta = []
-        # --- TQDM for reading images from paths ---
-        for img_path in tqdm(image_paths, desc="PrePro: Loading Images", unit="image"):
-            img = cv2.imread(img_path)
-            if img is not None:
-                images_to_load_meta.append({'path': img_path, 'cv_image': img})
-            else:
-                logger.warning(f"Failed to load image: {img_path}, skipping.")
-        
-        if not images_to_load_meta:
-            logger.error("No images could be loaded for preprocessing."); input_queue.put(None); return
-        
-        # Log memory after loading all images for the current preproces pass
-        log_collection_memory_usage("images_to_load_meta (incl. cv_image objects in preprocess)", images_to_load_meta, logger)
-        
-        preprocess_from_image_list(images_to_load_meta, batch_size, input_queue, model_net_width, model_net_height, utils)
-    else: 
-        logger.info("Preprocessing from stream...")
-        # ... (stream processing logic as before, tqdm is harder here without total)
-        # You could manually update a tqdm instance if you count frames.
-        # For now, keeping it simple for streams.
-        frames=[]; processed_frames=[]; frame_idx=0
-        stream_pbar = tqdm(desc="PrePro: Stream (frames)", unit="frame") # No total, will just count
-        while True:
-            ret,frame=cap.read()
-            if not ret: stream_pbar.close(); break
-            dummy_path=f"stream_frame_{frame_idx}"; frame_idx+=1
-            original_meta={'path':dummy_path,'frame':frame.copy()}
-            processed_frame=utils.preprocess(frame,model_net_width,model_net_height)
-            frames.append(original_meta); processed_frames.append(processed_frame)
-            if len(frames)==batch_size:
-                input_queue.put(([f.copy() for f in frames],[pf.copy() for pf in processed_frames]))
-                frames,processed_frames=[],[]
-            stream_pbar.update(1)
-        if frames: input_queue.put(([f.copy() for f in frames],[pf.copy() for pf in processed_frames]))
-        if not stream_pbar.disable: stream_pbar.close() # Close if not already closed (e.g. empty stream)
+    if cap is None: # Processing image files (batch-wise loading and preprocessing)
+        if not image_paths:
+            logger.warning("Preprocessing: No image paths provided for file-based processing.")
+            input_queue.put(None)
+            return
 
-    input_queue.put(None)
+        num_batches = (len(image_paths) + batch_size - 1) // batch_size
+        logger.info(f"Preprocessing {len(image_paths)} images in {num_batches} batches of size {batch_size}.")
+
+        for path_batch in tqdm(divide_list_to_batches(image_paths, batch_size), total=num_batches, desc="PrePro: Processing Batches", unit="batch"):
+            current_batch_originals_meta: List[Dict[str, Any]] = []
+            current_batch_processed_frames: List[np.ndarray] = []
+            
+            for img_path in path_batch:
+                img = cv2.imread(img_path)
+                if img is None:
+                    logger.warning(f"PrePro: Failed to load image: {img_path}, skipping.")
+                    continue
+                
+                # This 'original_meta' still contains the full 'frame' (original image).
+                # Only 'batch_size' such images are in memory within this inner loop before queuing.
+                original_meta = {'path': img_path, 'frame': img} 
+                
+                # Assuming utils.preprocess handles BGR to RGB if needed and returns the processed frame
+                processed_frame = utils.preprocess(img, model_net_width, model_net_height) 
+                
+                current_batch_originals_meta.append(original_meta)
+                current_batch_processed_frames.append(processed_frame)
+            
+            if current_batch_originals_meta: # If any images successfully loaded in this batch
+                input_queue.put((current_batch_originals_meta, current_batch_processed_frames))
+                # Optional: Log memory of current batch if extreme debugging needed, but could be too verbose.
+                # from object_detection_val import log_collection_memory_usage
+                # log_collection_memory_usage(f"preprocess_batch_cv_images", [m['frame'] for m in current_batch_originals_meta], logger)
+
+    else: # Processing camera or video stream (existing logic should be mostly fine as it's already frame-by-frame or batched)
+        logger.info("Preprocessing from stream...")
+        frames_buffer: List[Dict[str, Any]] = []
+        processed_frames_buffer: List[np.ndarray] = []
+        frame_idx = 0
+        
+        # For streams, total is unknown, tqdm will act as an activity spinner
+        with tqdm(desc="PrePro: Stream Frames", unit="frame") as stream_pbar:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    stream_pbar.close() # Close if loop breaks due to no more frames
+                    break
+                
+                dummy_path = f"stream_frame_{frame_idx}" 
+                frame_idx +=1
+                original_meta = {'path': dummy_path, 'frame': frame.copy()} # Send copy
+                processed_frame = utils.preprocess(frame, model_net_width, model_net_height)
+                
+                frames_buffer.append(original_meta)
+                processed_frames_buffer.append(processed_frame)
+                
+                if len(frames_buffer) == batch_size:
+                    input_queue.put((list(frames_buffer), list(processed_frames_buffer))) # Send copies of lists
+                    frames_buffer.clear()
+                    processed_frames_buffer.clear()
+                
+                stream_pbar.update(1)
+            
+            if frames_buffer: # Send any remaining frames
+                input_queue.put((list(frames_buffer), list(processed_frames_buffer)))
+            if not stream_pbar.disable and stream_pbar.n > 0 : # ensure it was used before closing
+                 stream_pbar.close()
+
+
+    input_queue.put(None)  # Signal end of preprocessing
 
 
 # Populates the global `all_hailo_predictions` if run_validation is True
