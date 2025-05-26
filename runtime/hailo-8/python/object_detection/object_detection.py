@@ -88,8 +88,10 @@ from typing import List, Dict, Optional, Tuple, Any # Keep all necessary types
 import yaml 
 from tqdm import tqdm
 
+from object_detection_val import log_collection_memory_usage
+
 # Import the ObjectDetectionUtils class from object_detection_utils
-from object_detection_utils import ObjectDetectionUtils, log_collection_memory_usage
+from object_detection_utils import ObjectDetectionUtils
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, '..'))
