@@ -88,8 +88,6 @@ from typing import List, Dict, Optional, Tuple, Any # Keep all necessary types
 import yaml 
 from tqdm import tqdm
 
-from object_detection_val import log_collection_memory_usage
-
 # Import the ObjectDetectionUtils class from object_detection_utils
 from object_detection_utils import ObjectDetectionUtils
 
@@ -105,7 +103,8 @@ from utils import HailoAsyncInference, load_images_opencv, validate_images, divi
 # Import the validation functions
 from object_detection_val import (
     load_ground_truth_data,
-    calculate_and_print_metrics_table
+    calculate_and_print_metrics_table,
+    log_collection_memory_usage
 )
 
 CAMERA_CAP_WIDTH = 1920
