@@ -361,6 +361,8 @@ def calculate_ap_for_class(
     return ap, overall_precision, overall_recall, int(total_tp)
 
 
+# In object_detection_val.py
+
 def calculate_and_print_metrics_table(
     hailo_preds_data: List[Dict[str, Any]], 
     gt_map: Dict[str, Dict[str, Any]], 
@@ -373,44 +375,43 @@ def calculate_and_print_metrics_table(
     overall_tp_sum_for_pr=0; overall_relevant_preds_sum_for_pr=0; overall_gt_sum_for_pr=0
 
     logger.info("Starting metrics calculation per class...")
-    # --- TQDM for the main loop over classes ---
-    for class_id in tqdm(range(num_classes), desc="Calculating Class Metrics", unit="class"):
+    # TQDM for the main loop over classes
+    for class_id in tqdm(range(num_classes), desc="Calculating Class Metrics", unit="class", position=0):
         class_name = class_names[class_id]
         current_class_predictions: List[Dict[str, Any]] = []
         current_class_ground_truths: List[Dict[str, Any]] = []
         images_containing_gt_for_class_set = set()
         num_gt_instances_this_class = 0
 
-        # Aggregate predictions and GTs for the current class
-        # This loop iterates all accumulated predictions for *each class*.
-        # If tqdm is desired here, ensure it's not too verbose.
-        # It might be better to log memory *after* this aggregation for the class.
-        for pred_item in hailo_preds_data: # This is iterating all_hailo_predictions
+        # TQDM for aggregating predictions and GTs for the current class
+        # This iterates through all_hailo_predictions (potentially large) for each class
+        # Using leave=False so this inner bar cleans up after each class
+        for pred_item in tqdm(hailo_preds_data, desc=f"Aggregating for {class_name[:15].ljust(15)}", unit="img", leave=False, position=1, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'):
             img_path = pred_item['image_path']
+            # Aggregate predictions for current class
             for det in pred_item['detections']:
                 if det['class_id'] == class_id:
                     current_class_predictions.append(det)
             
+            # Aggregate ground truths for current class
             if img_path in gt_map:
                 gt_image_info = gt_map[img_path]
                 has_gt_in_this_image_for_class_this_time = False
                 for gt_label in gt_image_info['labels']:
-                    if gt_label['class_id'] is not None: all_total_images_with_any_gt_set.add(img_path)
+                    if gt_label['class_id'] is not None: # Any GT for this image
+                        all_total_images_with_any_gt_set.add(img_path)
                     if gt_label['class_id'] == class_id:
                         current_class_ground_truths.append(gt_label)
                         num_gt_instances_this_class += 1
                         has_gt_in_this_image_for_class_this_time = True
-                if has_gt_in_this_image_for_class_this_time: images_containing_gt_for_class_set.add(img_path)
-        
-        # Log memory for per-class temporary collections (can be verbose, enable if needed)
-        # log_collection_memory_usage(f"preds_cls_{class_name}", current_class_predictions, logger)
-        # log_collection_memory_usage(f"GTs_cls_{class_name}", current_class_ground_truths, logger)
+                if has_gt_in_this_image_for_class_this_time:
+                    images_containing_gt_for_class_set.add(img_path)
         
         all_total_gt_instances_overall += num_gt_instances_this_class
         p50, r50, ap50, map50_95_class = 0.0, 0.0, 0.0, 0.0
         
         if num_gt_instances_this_class == 0:
-            p50 = 0.0 # No GTs, P=0 (as no TPs possible)
+            p50 = 0.0 
         else:
             ap50_calc, p50_calc, r50_calc, tp_this_class_for_pr = calculate_ap_for_class(
                 current_class_predictions, current_class_ground_truths, 0.50
@@ -424,11 +425,10 @@ def calculate_and_print_metrics_table(
                 overall_relevant_preds_sum_for_pr += len(current_class_predictions)
             overall_gt_sum_for_pr += num_gt_instances_this_class
 
-            # --- TQDM for IoU threshold loop for mAP50-95 --- (can be nested, might be too much)
-            # Let's keep it simple for now and not add tqdm here unless this specific part is identified as a huge bottleneck visually.
             aps_for_map50_95_range: List[float] = []
-            # for iou_thresh_int in tqdm(range(50, 100, 5), desc=f"mAP50-95 IoUs for {class_name[:10]}..", leave=False, unit="IoU"):
-            for iou_thresh_int in range(50, 100, 5): # No inner tqdm for now
+            iou_thresholds_for_map = list(range(50, 100, 5))
+            # TQDM for IoU threshold loop for mAP50-95
+            for iou_thresh_int in tqdm(iou_thresholds_for_map, desc=f"mAP IoUs for {class_name[:12].ljust(12)}", unit="IoU", leave=False, position=2, bar_format='{l_bar}{bar}| {n_fmt}/{total_fmt} [{rate_fmt}{postfix}]'):
                 iou_val = iou_thresh_int / 100.0
                 ap_at_iou, _, _, _ = calculate_ap_for_class(
                     current_class_predictions, current_class_ground_truths, iou_val
@@ -448,38 +448,18 @@ def calculate_and_print_metrics_table(
             
     log_collection_memory_usage("class_summary_metrics (metrics list)", class_summary_metrics, logger)
 
+    # ... (final 'all' metrics calculation and logging table as before) ...
     num_total_images_with_any_gt = len(all_total_images_with_any_gt_set)
-    
     all_p_overall = overall_tp_sum_for_pr / (overall_relevant_preds_sum_for_pr + 1e-9) if overall_relevant_preds_sum_for_pr > 0 else 0.0
     all_r_overall = overall_tp_sum_for_pr / (overall_gt_sum_for_pr + 1e-9) if overall_gt_sum_for_pr > 0 else 0.0
     all_map50_avg = np.mean(all_aps_50_list) if all_aps_50_list else 0.0
     all_map50_95_avg = np.mean(all_aps_50_95_list) if all_aps_50_95_list else 0.0
 
     header_format = "{:<20} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}"
-    # Using logger.info for table output for consistency if logs are captured
     logger.info("\nValidation Metrics:")
     logger.info(header_format.format("Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95)"))
     separator = "-" * (20 + 7 + 10 + 10 + 10 + 10 + 10 + (6 * 1))
     logger.info(separator)
-    
-    logger.info(header_format.format(
-        "all", 
-        num_total_images_with_any_gt, 
-        all_total_gt_instances_overall,
-        f"{all_p_overall:.3f}", 
-        f"{all_r_overall:.3f}", 
-        f"{all_map50_avg:.3f}", 
-        f"{all_map50_95_avg:.3f}"
-    ))
-
-    for metrics in class_summary_metrics:
-        logger.info(header_format.format(
-            metrics['name'], 
-            metrics['images_gt'], 
-            metrics['instances_gt'],
-            f"{metrics['P']:.3f}", 
-            f"{metrics['R']:.3f}", 
-            f"{metrics['mAP50']:.3f}", 
-            f"{metrics['mAP50-95']:.3f}"
-        ))
+    logger.info(header_format.format("all",num_total_images_with_any_gt,all_total_gt_instances_overall,f"{all_p_overall:.3f}",f"{all_r_overall:.3f}",f"{all_map50_avg:.3f}",f"{all_map50_95_avg:.3f}"))
+    for metrics in class_summary_metrics: logger.info(header_format.format(metrics['name'],metrics['images_gt'],metrics['instances_gt'],f"{metrics['P']:.3f}",f"{metrics['R']:.3f}",f"{metrics['mAP50']:.3f}",f"{metrics['mAP50-95']:.3f}"))
     logger.info(separator)
