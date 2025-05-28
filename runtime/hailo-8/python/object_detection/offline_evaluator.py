@@ -7,8 +7,20 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 import yaml
 import sys
+import os
 
 from loguru import logger # Assuming loguru is your preferred logger
+
+# This allows importing 'utils.py' from the parent directory.
+# This block should be placed at the top, before any imports that might rely on it.
+
+# Get the directory of the current script (offline_evaluator.py)
+OFFLINE_EVAL_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Get the parent directory (this should be your PROJECT_ROOT where utils.py resides)
+PROJECT_ROOT_DIR = os.path.abspath(os.path.join(OFFLINE_EVAL_SCRIPT_DIR, '..'))
+
+if PROJECT_ROOT_DIR not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT_DIR) # Add PROJECT_ROOT to the start of sys.path
 
 # Import necessary functions from your existing validation module
 # Ensure object_detection_val.py is in the same directory or Python path
