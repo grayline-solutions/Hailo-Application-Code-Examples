@@ -115,6 +115,26 @@ CAMERA_CAP_HEIGHT = 1080
 all_hailo_predictions: List[Dict[str, Any]] = []
 
 
+# Custom JSON Encoder for NumPy types
+class NumpyJSONEncoder(json.JSONEncoder):
+    """
+    Special json encoder for numpy types.
+    Converts numpy integers to Python int, numpy floats to Python float,
+    numpy arrays to Python lists, and numpy booleans to Python bool.
+    """
+    def default(self, o: Any) -> Any: # Changed 'obj' to 'o' to match base class
+        if isinstance(o, np.integer):    # Using 'o'
+            return int(o)
+        elif isinstance(o, np.floating): # Using 'o'
+            return float(o)
+        elif isinstance(o, np.ndarray):  # Using 'o'
+            return o.tolist()
+        elif isinstance(o, np.bool_):    # Using 'o'
+            return bool(o)
+        # Let the base class default method raise the TypeError for other types
+        return super(NumpyJSONEncoder, self).default(o) # Using 'o'
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Detection Example with Validation Metrics")
     parser.add_argument(
@@ -373,10 +393,12 @@ def save_predictions_to_json(predictions: List[Dict[str, Any]], output_filepath:
     """Saves the list of predictions to a JSON file for val metrics calc off RPi."""
     try:
         with open(output_filepath, 'w') as f:
-            json.dump(predictions, f, indent=4)
+            # Use the custom NumpyJSONEncoder here
+            json.dump(predictions, f, indent=4, cls=NumpyJSONEncoder)
         logger_obj.info(f"Hailo predictions successfully saved to: {output_filepath}")
     except Exception as e:
         logger_obj.error(f"Failed to save predictions to JSON file \'{output_filepath}\': {e}")
+        logger_obj.exception("Detailed error during JSON export:") # Logs full traceback
 
 
 def infer(
