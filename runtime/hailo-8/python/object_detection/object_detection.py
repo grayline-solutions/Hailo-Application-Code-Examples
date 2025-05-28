@@ -87,6 +87,7 @@ import cv2
 from typing import List, Dict, Optional, Tuple, Any # Keep all necessary types
 import yaml 
 from tqdm import tqdm
+import json
 
 # Import the ObjectDetectionUtils class from object_detection_utils
 from object_detection_utils import ObjectDetectionUtils
@@ -368,6 +369,16 @@ def postprocess(
         except ValueError: pass
 
 
+def save_predictions_to_json(predictions: List[Dict[str, Any]], output_filepath: str, logger_obj) -> None:
+    """Saves the list of predictions to a JSON file for val metrics calc off RPi."""
+    try:
+        with open(output_filepath, 'w') as f:
+            json.dump(predictions, f, indent=4)
+        logger_obj.info(f"Hailo predictions successfully saved to: {output_filepath}")
+    except Exception as e:
+        logger_obj.error(f"Failed to save predictions to JSON file \'{output_filepath}\': {e}")
+
+
 def infer(
     input_source: str, save_stream_output: bool, net_path: str, labels_txt_path: str, 
     batch_size: int, data_yaml_path: Optional[str] = None, use_test_split: bool = False
@@ -478,12 +489,36 @@ def infer(
     if run_validation_metrics and all_hailo_predictions:
         log_collection_memory_usage("all_hailo_predictions (after pipeline)", all_hailo_predictions, logger)
 
-    if run_validation_metrics and authoritative_class_names:
-        if all_hailo_predictions and current_run_ground_truth_map: 
-            logger.info("Calculating validation metrics...")
-            calculate_and_print_metrics_table(all_hailo_predictions, current_run_ground_truth_map, authoritative_class_names)
-        else: logger.warning("Not enough data for validation metrics (preds or GT map missing).")
-    logger.info('Inference/Validation run completed.')
+    # Export predictions to JSON if validation metrics are run
+    # This is done after the inference pipeline has completed.
+    # The intent is to perform the validataion metrics calculation off the RPi
+    if run_validation_metrics and all_hailo_predictions:
+            # Define a name for the output predictions file
+            # You could make this configurable via an argument if needed
+            predictions_output_dir = Path("predictions_export")
+            predictions_output_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create a filename, perhaps incorporating the model name or dataset name
+            hef_name_stem = Path(net_path).stem
+            dataset_name_stem = Path(data_yaml_path).stem if data_yaml_path else "unknown_dataset"
+            split_name = "test" if use_test_split else "val"
+            json_output_filename = f"{hef_name_stem}_{dataset_name_stem}_{split_name}_hailo_detections.json"
+            
+            predictions_json_filepath = predictions_output_dir / json_output_filename
+            
+            logger.info(f"Attempting to save Hailo predictions to {predictions_json_filepath}...")
+            save_predictions_to_json(all_hailo_predictions, str(predictions_json_filepath), logger)
+            log_collection_memory_usage("all_hailo_predictions (before metrics)", all_hailo_predictions, logger) # Memory log
+
+    # If validation metrics are run, calculate and print the metrics table
+    # Note: This is done on the RPi and is very slow for large datasets.
+    # It is recommended to run this on a more powerful machine with the exported JSON file.
+    # if run_validation_metrics and authoritative_class_names:
+    #     if all_hailo_predictions and current_run_ground_truth_map: 
+    #         logger.info("Calculating validation metrics...")
+    #         calculate_and_print_metrics_table(all_hailo_predictions, current_run_ground_truth_map, authoritative_class_names)
+    #     else: logger.warning("Not enough data for validation metrics (preds or GT map missing).")
+    # logger.info('Inference/Validation run completed.')
 
 
 def main() -> None:
