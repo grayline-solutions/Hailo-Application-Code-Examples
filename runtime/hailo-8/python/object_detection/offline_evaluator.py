@@ -11,28 +11,23 @@ import os
 
 from loguru import logger # Assuming loguru is your preferred logger
 
-# This allows importing 'utils.py' from the parent directory.
-# This block should be placed at the top, before any imports that might rely on it.
-
-# Get the directory of the current script (offline_evaluator.py)
-OFFLINE_EVAL_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-# Get the parent directory (this should be your PROJECT_ROOT where utils.py resides)
-PROJECT_ROOT_DIR = os.path.abspath(os.path.join(OFFLINE_EVAL_SCRIPT_DIR, '..'))
-
-if PROJECT_ROOT_DIR not in sys.path:
-    sys.path.insert(0, PROJECT_ROOT_DIR) # Add PROJECT_ROOT to the start of sys.path
-
 # Import necessary functions from your existing validation module
 # Ensure object_detection_val.py is in the same directory or Python path
 try:
     from object_detection_val import (
         load_ground_truth_data,
         calculate_and_print_metrics_table,
-        log_collection_memory_usage # If you want to log memory here too
+        log_collection_memory_usage
     )
 except ImportError:
     logger.error("Failed to import from object_detection_val.py. "
-                 "Ensure the file is in the correct path and has no import errors itself.")
+                 "Ensure the file is in the correct path, its dependencies are installed, "
+                 "and it can find 'utils.py' (sys.path should be set by now).")
+    logger.exception("Detailed import error for object_detection_val:") # Provides full traceback
+    exit(1)
+except Exception as e: # Catch other potential errors during import phase
+    logger.error(f"An unexpected error occurred while importing object_detection_val: {e}")
+    logger.exception("Detailed error:")
     exit(1)
 
 

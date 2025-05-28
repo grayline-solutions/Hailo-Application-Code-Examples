@@ -11,7 +11,7 @@ import yaml
 from loguru import logger
 from tqdm import tqdm
 
-from utils import IMAGE_EXTENSIONS
+IMAGE_EXTENSIONS: Tuple[str, ...] = ('.jpg', '.png', '.bmp', '.jpeg')
 
 
 def get_approx_deep_size(obj, seen_ids=None):
