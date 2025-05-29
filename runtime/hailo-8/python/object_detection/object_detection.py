@@ -311,7 +311,8 @@ def postprocess(
     run_validation: bool, 
     model_net_height: int,
     model_net_width: int,
-    total_items_to_expect: Optional[int] = None # Renamed for clarity
+    total_items_to_expect: Optional[int] = None, # Renamed for clarity
+    dataset_root_for_relative_paths: Optional[Path] = None
 ) -> None:
     global all_hailo_predictions
     image_counter = 0
@@ -321,7 +322,7 @@ def postprocess(
     # --- TQDM for postprocessing loop ---
     pbar_desc = "PostPro: Stream (frames)" if cap is not None else "PostPro: Images"
     # Initialize tqdm here to use with 'with' statement or manage manually
-    pbar = tqdm(total=total_items_to_expect, desc=pbar_desc, unit="item")
+    pbar = tqdm(total = total_items_to_expect, desc = pbar_desc, unit = "item")
 
     processed_count = 0
     try:
@@ -329,15 +330,16 @@ def postprocess(
             result_item = output_queue.get() # Consider timeout if queue can get stuck
             if result_item is None:
                 if total_items_to_expect is not None and processed_count < total_items_to_expect:
-                     logger.warning(f"Postprocess queue ended; received {processed_count}/{total_items_to_expect} items.")
+                     logger.warning(f"Postprocess queue ended; received {processed_count} / {total_items_to_expect} items.")
                 break
             
-            processed_count +=1
+            processed_count += 1
             # ... (original_frame_meta, infer_results, image_path extraction) ...
             # ... (raw_detections_on_model_input logic) ...
-            original_frame_meta,infer_results=result_item; original_cv_image=original_frame_meta['frame']
+            original_frame_meta, infer_results = result_item
+            original_cv_image = original_frame_meta['frame']
             # Use processed_count for a unique ID if path is not available for streams
-            image_path=original_frame_meta.get('path',f"processed_item_{processed_count}")
+            absolute_image_path_str = original_frame_meta.get('path', f"processed_item_{processed_count}")
 
             if isinstance(infer_results,list) and len(infer_results)==1 and isinstance(infer_results[0],(list,np.ndarray)): infer_results=infer_results[0]
             raw_detections_on_model_input=utils.extract_detections(infer_results,threshold=0.001)
@@ -345,48 +347,93 @@ def postprocess(
             if run_validation:
                 # ... (logic to populate current_image_pred_list and append to all_hailo_predictions) ...
                 # This is a significant accumulation point.
-                img_h,img_w=original_cv_image.shape[:2]; scale_ratio=min(model_net_width/img_w,model_net_height/img_h) if img_w>0 and img_h>0 else 1.0
-                new_scaled_img_w=int(img_w*scale_ratio); new_scaled_img_h=int(img_h*scale_ratio)
-                pad_x=(model_net_width-new_scaled_img_w)//2; pad_y=(model_net_height-new_scaled_img_h)//2
-                current_image_pred_list=[];
+                img_h, img_w = original_cv_image.shape[:2]
+                scale_ratio = min(model_net_width / img_w, model_net_height / img_h) if img_w > 0 and img_h > 0 else 1.0
+                new_scaled_img_w = int(img_w * scale_ratio)
+                new_scaled_img_h = int(img_h * scale_ratio)
+                pad_x = (model_net_width - new_scaled_img_w) // 2
+                pad_y = (model_net_height - new_scaled_img_h) // 2
+                current_image_pred_list = []
                 for i in range(raw_detections_on_model_input['num_detections']):
-                    norm_ymin,norm_xmin,norm_ymax,norm_xmax=raw_detections_on_model_input['detection_boxes'][i]
-                    abs_xmin_pad=norm_xmin*model_net_width; abs_ymin_pad=norm_ymin*model_net_height; abs_xmax_pad=norm_xmax*model_net_width; abs_ymax_pad=norm_ymax*model_net_height
-                    x1_orig=(abs_xmin_pad-pad_x)/scale_ratio if scale_ratio!=0 else 0; y1_orig=(abs_ymin_pad-pad_y)/scale_ratio if scale_ratio!=0 else 0
-                    x2_orig=(abs_xmax_pad-pad_x)/scale_ratio if scale_ratio!=0 else 0; y2_orig=(abs_ymax_pad-pad_y)/scale_ratio if scale_ratio!=0 else 0
-                    final_box_abs=[np.clip(min(x1_orig,x2_orig),0,img_w-1 if img_w>0 else 0), np.clip(min(y1_orig,y2_orig),0,img_h-1 if img_h>0 else 0),
-                                   np.clip(max(x1_orig,x2_orig),0,img_w-1 if img_w>0 else 0), np.clip(max(y1_orig,y2_orig),0,img_h-1 if img_h>0 else 0)]
-                    if final_box_abs[2]>final_box_abs[0] and final_box_abs[3]>final_box_abs[1]:
-                        current_image_pred_list.append({'box_abs_xyxy':final_box_abs,'score':raw_detections_on_model_input['detection_scores'][i],'class_id':raw_detections_on_model_input['detection_classes'][i]})
-                all_hailo_predictions.append({'image_path':image_path,'width':img_w,'height':img_h,'detections':current_image_pred_list})
+                    norm_ymin, norm_xmin, norm_ymax, norm_xmax = raw_detections_on_model_input['detection_boxes'][i]
+                    abs_xmin_pad = norm_xmin * model_net_width
+                    abs_ymin_pad = norm_ymin * model_net_height
+                    abs_xmax_pad = norm_xmax * model_net_width
+                    abs_ymax_pad = norm_ymax * model_net_height
+                    x1_orig = (abs_xmin_pad - pad_x) / scale_ratio if scale_ratio != 0 else 0
+                    y1_orig = (abs_ymin_pad - pad_y) / scale_ratio if scale_ratio !=0 else 0
+                    x2_orig = (abs_xmax_pad - pad_x) / scale_ratio if scale_ratio !=0 else 0
+                    y2_orig = (abs_ymax_pad - pad_y) / scale_ratio if scale_ratio !=0 else 0
+                    final_box_abs = [np.clip(min(x1_orig, x2_orig), 0, img_w - 1 if img_w > 0 else 0), 
+                                     np.clip(min(y1_orig, y2_orig), 0, img_h - 1 if img_h > 0 else 0),
+                                     np.clip(max(x1_orig, x2_orig), 0, img_w - 1 if img_w > 0 else 0),
+                                     np.clip(max(y1_orig, y2_orig), 0, img_h - 1 if img_h > 0 else 0)]
+                    if final_box_abs[2] > final_box_abs[0] and final_box_abs[3] > final_box_abs[1]:
+                        current_image_pred_list.append({
+                            'box_abs_xyxy': final_box_abs,
+                            'score': raw_detections_on_model_input['detection_scores'][i],
+                            'class_id': raw_detections_on_model_input['detection_classes'][i]
+                            })
 
+                path_to_store_in_json = absolute_image_path_str # Default to absolute
+                if dataset_root_for_relative_paths is not None:
+                    try:
+                        # Ensure the image path is absolute before making it relative
+                        abs_img_path_obj = Path(absolute_image_path_str).resolve()
+                        relative_path_obj = abs_img_path_obj.relative_to(dataset_root_for_relative_paths)
+                        # Store as POSIX-style string for better cross-platform compatibility in JSON
+                        path_to_store_in_json = relative_path_obj.as_posix()
+                        # logger.debug(f"Storing relative path in JSON: {path_to_store_in_json}") # Optional debug
+                    except ValueError: # Happens if path is not under dataset_root
+                        logger.warning(f"Image path {absolute_image_path_str} is not under dataset root {dataset_root_for_relative_paths}. Storing absolute path in JSON.")
+                        path_to_store_in_json = str(Path(absolute_image_path_str).resolve().as_posix()) # Store resolved absolute
+                    except Exception as e:
+                        logger.error(f"Error making path relative: {e}. Storing absolute path {absolute_image_path_str} in JSON.")
+                        path_to_store_in_json = str(Path(absolute_image_path_str).resolve().as_posix())
+
+                all_hailo_predictions.append({
+                    'image_path': path_to_store_in_json,
+                    'width': img_w,
+                    'height': img_h,
+                    'detections': current_image_pred_list
+                    })
 
             # ... (visualization and saving output logic as previously refined) ...
-            frame_to_process:Optional[np.ndarray]=None
-            if save_output_flag or (cap is not None): frame_to_process=utils.draw_detections(raw_detections_on_model_input,original_cv_image.copy())
-            if cap is not None and frame_to_process is not None: cv2.imshow("Output",frame_to_process)
+            frame_to_process:Optional[np.ndarray] = None
+            if save_output_flag or (cap is not None): 
+                frame_to_process = utils.draw_detections(raw_detections_on_model_input, original_cv_image.copy())
+            if cap is not None and frame_to_process is not None: 
+                cv2.imshow("Output",frame_to_process)
             if save_output_flag and frame_to_process is not None:
-                output_path_obj.mkdir(exist_ok=True)
+                output_path_obj.mkdir(exist_ok = True)
                 if cap is not None:
                     if out_video_writer is None:
-                        frame_h_vid,frame_w_vid=frame_to_process.shape[:2]; fourcc=cv2.VideoWriter_fourcc(*'XVID')
-                        fps_val=cap.get(cv2.CAP_PROP_FPS); fps_vid=fps_val if fps_val and fps_val>0 else 20.0
-                        video_output_path=str(output_path_obj/'output_video.avi')
-                        out_video_writer=cv2.VideoWriter(video_output_path,fourcc,fps_vid,(frame_w_vid,frame_h_vid)); logger.info(f"Saving output video to: {video_output_path}")
-                    if out_video_writer: out_video_writer.write(frame_to_process)
+                        frame_h_vid, frame_w_vid = frame_to_process.shape[:2]
+                        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                        fps_val = cap.get(cv2.CAP_PROP_FPS)
+                        fps_vid = fps_val if fps_val and fps_val > 0 else 20.0
+                        video_output_path = str(output_path_obj / 'output_video.avi')
+                        out_video_writer = cv2.VideoWriter(video_output_path, fourcc, fps_vid, (frame_w_vid, frame_h_vid))
+                        logger.info(f"Saving output video to: {video_output_path}")
+                    if out_video_writer: 
+                        out_video_writer.write(frame_to_process)
                 else:
-                    image_output_path=str(output_path_obj/f"output_{Path(image_path).stem}.png"); cv2.imwrite(image_output_path,frame_to_process)
+                    image_output_path = str(output_path_obj / f"output_{Path(absolute_image_path_str).stem}.png")
+                    cv2.imwrite(image_output_path, frame_to_process)
             
             pbar.update(1)
             if cv2.waitKey(1) & 0xFF == ord('q'): 
-                logger.info("User quit postprocessing."); break
+                logger.info("User quit postprocessing.")
+                break
     finally:
         pbar.close() # Ensure pbar is closed
-        if out_video_writer: out_video_writer.release()
+        if out_video_writer: 
+            out_video_writer.release()
         cv2.destroyAllWindows() # May error if no windows were ever shown
         try:
             output_queue.task_done() # May error if called too many times or queue is complex
-        except ValueError: pass
+        except ValueError: 
+            pass
 
 
 def save_predictions_to_json(predictions: List[Dict[str, Any]], output_filepath: str, logger_obj) -> None:
@@ -412,6 +459,7 @@ def infer(
     run_validation_metrics = False
     image_file_paths_for_inference: List[str] = [] 
     cap: Optional[cv2.VideoCapture] = None
+    dataset_root_for_json_paths: Optional[Path] = None # To store dataset root for JSON file export paths
 
     det_utils = ObjectDetectionUtils(labels_txt_path)
     class_names_from_txt_file: List[str] = list(det_utils.labels)
@@ -421,6 +469,23 @@ def infer(
 
     if data_yaml_path:
         logger.info(f"Data YAML provided: {data_yaml_path}. Attempting to load dataset.")
+        # Determine dataset_root for path relativization
+        try:
+            with open(data_yaml_path, 'r') as f_yaml_root_parse:
+                yaml_cfg_for_root = yaml.safe_load(f_yaml_root_parse)
+            if yaml_cfg_for_root and 'path' in yaml_cfg_for_root:
+                path_from_yaml = Path(yaml_cfg_for_root['path'])
+                if path_from_yaml.is_absolute():
+                    dataset_root_for_json_paths = path_from_yaml.resolve()
+                else:
+                    # 'path' in YAML is relative to the YAML file's directory
+                    dataset_root_for_json_paths = (Path(data_yaml_path).parent / path_from_yaml).resolve()
+                logger.info(f"Dataset root for JSON path relativization: {dataset_root_for_json_paths}")
+            else:
+                logger.warning(f"'path' key not found in {data_yaml_path}. Image paths in JSON will be absolute.")
+        except Exception as e:
+            logger.error(f"Error determining dataset root from {data_yaml_path}: {e}. Image paths in JSON will be absolute.")
+        # Load ground truth data from the YAML file
         loaded_image_paths, loaded_gt_map = load_ground_truth_data(data_yaml_path, use_test_split)
         if loaded_image_paths: 
             image_file_paths_for_inference = loaded_image_paths
@@ -499,7 +564,8 @@ def infer(
     )
     postprocess_thread = threading.Thread(
         target=postprocess,
-        args=(output_queue, cap, save_stream_output, det_utils, run_validation_metrics, model_net_h, model_net_w, total_items_for_pipeline)
+        args=(output_queue, cap, save_stream_output, det_utils, run_validation_metrics, model_net_h, model_net_w, 
+              total_items_for_pipeline, dataset_root_for_json_paths)
     )
 
     logger.info(f"Starting inference pipeline. Processing {total_items_for_pipeline if total_items_for_pipeline is not None else 'stream'} items...")

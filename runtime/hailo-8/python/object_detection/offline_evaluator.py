@@ -80,6 +80,25 @@ def main_offline_eval():
     logger.info(f"Predictions JSON: {args.predictions_json}")
     logger.info(f"Using test split: {args.test_split}")
 
+    # Determine dataset root for this offline evaluation context (current yaml file)
+    offline_dataset_root: Optional[Path] = None
+    try:
+        with open(args.data_yaml, 'r') as f_yaml_offline_root:
+            yaml_cfg_offline = yaml.safe_load(f_yaml_offline_root)
+        if yaml_cfg_offline and 'path' in yaml_cfg_offline:
+            path_from_yaml = Path(yaml_cfg_offline['path'])
+            if path_from_yaml.is_absolute():
+                offline_dataset_root = path_from_yaml.resolve()
+            else:
+                offline_dataset_root = (Path(args.data_yaml).parent / path_from_yaml).resolve()
+            logger.info(f"Offline evaluator determined dataset root: {offline_dataset_root}")
+        else:
+            logger.error(f"'path' key not found in the data YAML '{args.data_yaml}'. Cannot reconstruct absolute image paths.")
+            return
+    except Exception as e:
+        logger.error(f"Error reading dataset root 'path' from '{args.data_yaml}': {e}")
+        return
+
     # 1. Load ground truth data
     logger.info("Loading ground truth data...")
     # load_ground_truth_data returns: Tuple[List[str], Dict[str, Dict[str, Any]]]
@@ -134,20 +153,50 @@ def main_offline_eval():
 
     # 3. Load exported Hailo predictions
     logger.info("Loading Hailo predictions...")
-    hailo_predictions = load_predictions_from_json(args.predictions_json)
+    raw_hailo_predictions = load_predictions_from_json(args.predictions_json)
 
-    if not hailo_predictions:
+    if not raw_hailo_predictions:
         logger.error("Failed to load Hailo predictions. Exiting.")
         return
 
-    log_collection_memory_usage("hailo_predictions (offline evaluator)", hailo_predictions, logger)
+    log_collection_memory_usage("hailo_predictions (offline evaluator)", raw_hailo_predictions, logger)
 
+    # Reconstruct absolute paths for predictions ---
+    reconstructed_hailo_predictions: List[Dict[str, Any]] = []
+    if offline_dataset_root:
+        for pred_entry in raw_hailo_predictions:
+            path_from_json = pred_entry['image_path']
+            # Path() can usually handle POSIX paths fine on Windows and vice-versa for joining
+            # but resolve() makes it canonical for the current OS.
+            try:
+                # Check if path_from_json is already absolute (fallback case from object_detection.py)
+                if Path(path_from_json).is_absolute():
+                    abs_image_path = Path(path_from_json).resolve()
+                else:
+                    abs_image_path = (offline_dataset_root / path_from_json).resolve()
+                
+                # Create a new entry to avoid modifying the original list if it's used elsewhere
+                updated_pred_entry = pred_entry.copy()
+                updated_pred_entry['image_path'] = str(abs_image_path) # Store as string
+                reconstructed_hailo_predictions.append(updated_pred_entry)
+            except Exception as e:
+                logger.error(f"Error reconstructing path for '{path_from_json}' with root '{offline_dataset_root}': {e}. Skipping entry.")
+        
+        logger.info(f"Reconstructed paths for {len(reconstructed_hailo_predictions)} prediction entries.")
+        if reconstructed_hailo_predictions: # Log a sample reconstructed path
+            logger.debug(f"Sample reconstructed prediction image_path: {reconstructed_hailo_predictions[0]['image_path']}")
+
+    else: # Should not happen if YAML parsing for root was successful
+        logger.error("Offline dataset root not determined. Cannot reconstruct prediction paths.")
+        return
+        
+    log_collection_memory_usage("hailo_predictions (reconstructed paths)", reconstructed_hailo_predictions, logger)
 
     # 4. Calculate and print metrics
-    if hailo_predictions and ground_truth_map and authoritative_class_names:
+    if reconstructed_hailo_predictions and ground_truth_map and authoritative_class_names:
         logger.info("Calculating validation metrics...")
         calculate_and_print_metrics_table(
-            hailo_predictions,
+            reconstructed_hailo_predictions,
             ground_truth_map,
             authoritative_class_names
         )
@@ -155,6 +204,7 @@ def main_offline_eval():
         logger.warning("Not enough data to calculate offline validation metrics (predictions, ground truth, or class names missing).")
 
     logger.info("Offline evaluation completed.")
+
 
 if __name__ == "__main__":
     # Configure logger (optional, but good practice)
