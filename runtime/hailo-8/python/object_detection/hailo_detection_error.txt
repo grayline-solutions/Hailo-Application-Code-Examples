@@ -1,0 +1,33 @@
+(venv_hailo_rpi5_examples) ivogeorg@raspberrypi:~/git-repos/Hailo-Application-Code-Examples-1/runtime/hailo-8/python/object_detection $ python object_detection.py -n /home/ivogeorg/Models/Cars_and_Cows/20250529/finetuning_batch_1_roboflow_100_epochs_10_finetune_calib_set.hef -b 1 --data /home/ivogeorg/Models/Cars_and_Cows/20250529/car_cow_finetuning_config.yaml -l /home/ivogeorg/Models/Cars_and_Cows/20250529/car_cow_labels.txt
+2025-06-02 19:16:59.189 | INFO     | __main__:infer:471 - Data YAML provided: /home/ivogeorg/Models/Cars_and_Cows/20250529/car_cow_finetuning_config.yaml. Attempting to load dataset.
+2025-06-02 19:16:59.190 | INFO     | __main__:infer:483 - Dataset root for JSON path relativization: /home/ivogeorg/Data/datasets/Cars_and_Cows/20250529
+2025-06-02 19:16:59.191 | INFO     | object_detection_val:load_ground_truth_data:176 - Using dataset root: /home/ivogeorg/Data/datasets/Cars_and_Cows/20250529 for val split.
+2025-06-02 19:16:59.191 | INFO     | object_detection_val:load_ground_truth_data:200 - Scanning for images in directory: /home/ivogeorg/Data/datasets/Cars_and_Cows/20250529/images/val
+Scanning val: 100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1107/1107 [00:00<00:00, 21830.24file/s]
+2025-06-02 19:16:59.254 | INFO     | object_detection_val:log_collection_memory_usage:57 - Collection 'collected_image_paths (Path objects)': Items = 1107, Approx. Memory = 0.10 MB
+2025-06-02 19:16:59.254 | INFO     | object_detection_val:load_ground_truth_data:237 - Processing 1107 unique image paths for labels and dimensions.
+Loading val GT data: 100%|████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1107/1107 [01:56<00:00,  9.50image/s]
+2025-06-02 19:18:55.798 | INFO     | object_detection_val:load_ground_truth_data:269 - Finished GT loading. Found 1107 readable images.
+2025-06-02 19:18:55.799 | INFO     | object_detection_val:log_collection_memory_usage:57 - Collection 'val_image_files_list (paths)': Items = 1107, Approx. Memory = 0.18 MB
+2025-06-02 19:18:56.115 | INFO     | object_detection_val:log_collection_memory_usage:57 - Collection 'val_ground_truth_map (GT data)': Items = 1107, Approx. Memory = 16.97 MB
+2025-06-02 19:18:56.119 | INFO     | __main__:infer:495 - Validation mode active: 1107 images to process.
+2025-06-02 19:18:56.120 | INFO     | __main__:infer:514 - Using YAML names (2 classes) for metrics.
+2025-06-02 19:18:56.679 | INFO     | __main__:infer:571 - Starting inference pipeline. Processing 1107 items...
+2025-06-02 19:18:56.680 | INFO     | __main__:preprocess:226 - Preprocessing 1107 images in 1107 batches of size 1.
+PostPro: Images:   0%|                                                                                                                                                            | 0/1107 [00:00<?, ?item/s]
+Exception in thread Thread-3 (postprocess):                                                                                                                                       | 0/1107 [00:00<?, ?item/s]
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/threading.py", line 1038, in _bootstrap_inner
+PrePro: Processing Batches:   1%|▊                                                                                                                                       | 7/1107 [00:00<00:16, 68.12batch/s]    self.run()
+  File "/usr/lib/python3.11/threading.py", line 975, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/ivogeorg/git-repos/Hailo-Application-Code-Examples-1/runtime/hailo-8/python/object_detection/object_detection.py", line 345, in postprocess
+    raw_detections_on_model_input=utils.extract_detections(infer_results,threshold=0.001)
+                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ivogeorg/git-repos/Hailo-Application-Code-Examples-1/runtime/hailo-8/python/object_detection/object_detection_utils.py", line 161, in extract_detections
+    bbox, score = det[:4], det[4]
+                           ~~~^^^
+IndexError: string index out of range
+PrePro: Processing Batches:   7%|██████████                                                                                                                             | 82/1107 [00:02<00:43, 23.69batch/s][HailoRT] [warning] Failed to acquire buffer because the buffer pool is empty. This could be caused by uneven reading and writing speeds, with a short user-defined timeout. (timeout=10000ms)
+[HailoRT] [error] Non-recoverable Async Infer Pipeline error. status error code: HAILO_TIMEOUT(4)
+[HailoRT] [error] Shutting down the pipeline with status HAILO_TIMEOUT(4)
