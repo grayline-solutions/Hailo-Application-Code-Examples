@@ -104,7 +104,7 @@ from utils import HailoAsyncInference, load_images_opencv, validate_images, divi
 # Import the validation functions
 from object_detection_val import (
     load_ground_truth_data,
-    calculate_and_print_metrics_table,
+    calculate_and_print_metrics_table_acc,
     log_collection_memory_usage
 )
 

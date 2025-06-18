@@ -16,7 +16,7 @@ from loguru import logger # Assuming loguru is your preferred logger
 try:
     from object_detection_val import (
         load_ground_truth_data,
-        calculate_and_print_metrics_table,
+        calculate_and_print_metrics_table_acc,
         log_collection_memory_usage
     )
 except ImportError:
@@ -195,7 +195,7 @@ def main_offline_eval():
     # 4. Calculate and print metrics
     if reconstructed_hailo_predictions and ground_truth_map and authoritative_class_names:
         logger.info("Calculating validation metrics...")
-        calculate_and_print_metrics_table(
+        calculate_and_print_metrics_table_acc(
             reconstructed_hailo_predictions,
             ground_truth_map,
             authoritative_class_names

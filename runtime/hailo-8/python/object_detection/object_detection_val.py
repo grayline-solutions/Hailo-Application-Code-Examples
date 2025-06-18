@@ -448,7 +448,7 @@ def calculate_and_print_metrics_table(
         
         if num_gt_instances_this_class > 0:
             all_aps_50_list.append(ap50)
-            all_aps_50_95_list.append(map50_95_class)
+            all_aps_50_95_list.append(float(map50_95_class))
             
     log_collection_memory_usage("class_summary_metrics (metrics list)", class_summary_metrics, logger)
 
