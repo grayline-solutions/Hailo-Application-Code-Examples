@@ -474,7 +474,7 @@ def infer(
             with open(data_yaml_path, 'r') as f_yaml_root_parse:
                 yaml_cfg_for_root = yaml.safe_load(f_yaml_root_parse)
             if yaml_cfg_for_root and 'path' in yaml_cfg_for_root:
-                path_from_yaml = Path(yaml_cfg_for_root['path'])
+                path_from_yaml = Path(yaml_cfg_for_root['path']).expanduser()
                 if path_from_yaml.is_absolute():
                     dataset_root_for_json_paths = path_from_yaml.resolve()
                 else:
