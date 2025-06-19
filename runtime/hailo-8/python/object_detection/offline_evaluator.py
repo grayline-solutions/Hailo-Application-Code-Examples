@@ -35,6 +35,12 @@ except Exception as e: # Catch other potential errors during import phase
 def parse_offline_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Offline Metrics Evaluator for Hailo Detections")
     parser.add_argument(
+        "--metrics-version",
+        choices=["pyloop", "numba_mproc"],
+        default="numba_mproc",
+        help="Which metrics implementation to use: 'pyloop' (original Python loop) or 'numba_mproc' (Numba + multiprocessing, default)."
+    )    
+    parser.add_argument(
         "--data_yaml",
         required=True,
         type=str,
@@ -196,11 +202,25 @@ def main_offline_eval():
     # 4. Calculate and print metrics
     if reconstructed_hailo_predictions and ground_truth_map and authoritative_class_names:
         logger.info("Calculating validation metrics...")
-        calculate_and_print_metrics_table_acc(
-            reconstructed_hailo_predictions,
-            ground_truth_map,
-            authoritative_class_names
-        )
+        # The choice of metrics implementation is made based on the command line argument.
+        # More metrics implementations can be added by extending the if-else logic here.
+        # This allows for flexibility in testing and performance evaluation.
+        if args.metrics_version == "numba_mproc":
+            logger.info("Metrics calculated using Numba + multiprocessing.")
+            calculate_and_print_metrics_table_acc_numba_mproc(
+                reconstructed_hailo_predictions,
+                ground_truth_map,
+                authoritative_class_names
+            )
+        elif args.metrics_version == "pyloop":
+            # This is the original Python loop implementation for metrics calculation
+            # It is faster for very dense classes
+            logger.info("Metrics calculated using original Python loop (pyloop).")
+            calculate_and_print_metrics_table_acc_pyloop(
+                reconstructed_hailo_predictions,
+                ground_truth_map,
+                authoritative_class_names
+            )
     else:
         logger.warning("Not enough data to calculate offline validation metrics (predictions, ground truth, or class names missing).")
 
