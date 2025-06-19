@@ -600,7 +600,7 @@ def per_class_metrics(args):
     }
 
 
-def calculate_and_print_metrics_table_acc(
+def calculate_and_print_metrics_table_acc_numba_mproc(
     hailo_preds_data: list,
     gt_map: dict,
     class_names: list

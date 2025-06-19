@@ -16,7 +16,7 @@ from loguru import logger # Assuming loguru is your preferred logger
 try:
     from object_detection_val import (
         load_ground_truth_data,
-        calculate_and_print_metrics_table_acc,
+        calculate_and_print_metrics_table_acc_numba_mproc,
         log_collection_memory_usage
     )
 except ImportError:
