@@ -470,6 +470,7 @@ def calculate_and_print_metrics_table(
     for metrics in class_summary_metrics: logger.info(header_format.format(metrics['name'],metrics['images_gt'],metrics['instances_gt'],f"{metrics['P']:.3f}",f"{metrics['R']:.3f}",f"{metrics['mAP50']:.3f}",f"{metrics['mAP50-95']:.3f}"))
     logger.info(separator)
 
+
 def compute_ap_and_pr(scores: np.ndarray, tp_flags: np.ndarray, num_gt: int) -> Tuple[float, float, float, int]:
     """
     Calculates AP, Precision, and Recall from a list of scores and TP flags.
@@ -521,6 +522,199 @@ def compute_ap_and_pr(scores: np.ndarray, tp_flags: np.ndarray, num_gt: int) -> 
         r_for_table = 0.0
         
     return ap, p_for_table, r_for_table, total_tp_for_this_set
+
+
+def calculate_and_print_metrics_table_acc_pyloop(
+    hailo_preds_data: List[Dict[str, Any]],
+    gt_map: Dict[str, Dict[str, Any]],
+    class_names: List[str]
+) -> None:
+    num_classes = len(class_names)
+    iou_thresholds_map_range = np.linspace(0.5, 0.95, 10)  # 10 IoU thresholds for mAP@.5-.95
+
+    # --- Data Structures to Store Intermediate Results ---
+    # List for each IoU threshold. Each list will contain tuples: (score, is_tp, class_id)
+    # for ALL predictions across ALL images.
+    all_pred_stats_by_iou_thresh = [[] for _ in range(len(iou_thresholds_map_range))]
+    
+    # Specifically for IoU=0.5 (often index 0 of iou_thresholds_map_range if it starts at 0.5)
+    # Let's find the index for IoU 0.5 to be explicit
+    try:
+        iou_0_5_idx = np.where(np.isclose(iou_thresholds_map_range, 0.5))[0][0]
+    except IndexError: # Should not happen if 0.5 is in the linspace
+        logger.error("IoU threshold 0.5 not found in defined range. Metrics might be incorrect.")
+        iou_0_5_idx = 0 # Fallback, assuming 0.5 is the first
+
+    # Ground truth instance counts and images containing GTs for each class
+    gt_instance_counts_per_class = np.zeros(num_classes, dtype=int)
+    images_with_gt_per_class = [set() for _ in range(num_classes)] # Stores image_paths
+
+    logger.info("Stage 1: Matching predictions to ground truths (per image)...")
+
+    # Quick lookup for predictions by image path
+    preds_by_image_path = {p['image_path']: p['detections'] for p in hailo_preds_data}
+    
+    # Ensure paths are consistent for lookup
+    gt_map_resolved_keys = {str(Path(k).resolve()): v for k, v in gt_map.items()}
+    
+    processed_image_paths = set()
+
+    for pred_item in tqdm(hailo_preds_data, desc="Processing images"):
+        image_path_str = str(Path(pred_item['image_path']).resolve()) # Resolve path from predictions
+        processed_image_paths.add(image_path_str)
+
+        image_predictions_sorted = sorted(pred_item['detections'], key=lambda x: x['score'], reverse=True)
+        
+        gt_image_info = gt_map_resolved_keys.get(image_path_str)
+
+        # Temporary store for GT boxes on this image, organized by class
+        gt_boxes_on_this_image_by_class = [[] for _ in range(num_classes)]
+        if gt_image_info:
+            for gt_label in gt_image_info['labels']:
+                class_idx = gt_label['class_id']
+                if 0 <= class_idx < num_classes:
+                    gt_boxes_on_this_image_by_class[class_idx].append(gt_label['bbox_abs'])
+                    # Count GT instances only once per image, even if image is processed multiple times by pred loop
+                    # This counting should ideally happen by iterating gt_map once.
+
+        # Match predictions for this image across all defined IoU thresholds
+        # For each IoU threshold:
+        for iou_list_idx, current_iou_thresh in enumerate(iou_thresholds_map_range):
+            # For each prediction, we need to know if it's a TP for this IoU threshold
+            # Keep track of used GTs *for this image and this IoU threshold*
+            gt_used_flags_this_image_this_iou = [[False for _ in gt_list] for gt_list in gt_boxes_on_this_image_by_class]
+
+            for pred_det in image_predictions_sorted:
+                pred_class_idx = pred_det['class_id']
+                if not (0 <= pred_class_idx < num_classes):
+                    continue # Skip if class_id is invalid for predictions
+
+                pred_box = pred_det['box_abs_xyxy']
+                best_iou_for_this_pred = -1.0
+                best_gt_match_idx = -1
+
+                # Compare with GTs of the same class *on this image*
+                for gt_idx, gt_box in enumerate(gt_boxes_on_this_image_by_class[pred_class_idx]):
+                    iou = calculate_iou(pred_box, gt_box)
+                    if iou > best_iou_for_this_pred:
+                        best_iou_for_this_pred = iou
+                        best_gt_match_idx = gt_idx
+                
+                is_tp = False
+                if best_iou_for_this_pred >= current_iou_thresh and best_gt_match_idx != -1:
+                    if not gt_used_flags_this_image_this_iou[pred_class_idx][best_gt_match_idx]:
+                        is_tp = True
+                        gt_used_flags_this_image_this_iou[pred_class_idx][best_gt_match_idx] = True
+                
+                all_pred_stats_by_iou_thresh[iou_list_idx].append(
+                    (pred_det['score'], is_tp, pred_class_idx)
+                )
+
+    # Count total GT instances and images with GTs (do this once by iterating gt_map)
+    logger.info("Counting total ground truth instances and images with GTs...")
+    for image_path_str_gt_key in tqdm(gt_map_resolved_keys.keys(), desc="Aggregating GT counts"):
+        gt_image_info_for_count = gt_map_resolved_keys[image_path_str_gt_key]
+        for gt_label in gt_image_info_for_count['labels']:
+            class_idx = gt_label['class_id']
+            if 0 <= class_idx < num_classes:
+                gt_instance_counts_per_class[class_idx] += 1
+                images_with_gt_per_class[class_idx].add(image_path_str_gt_key)
+
+
+    logger.info("Stage 2: Calculating AP, P, R per class...")
+    class_summary_metrics = []
+    all_aps_50_list = []
+    all_aps_50_95_list = []
+    
+    # For overall P, R calculation:
+    # Sum TPs and predictions considered for P, and GTs for R, for IoU@0.5
+    overall_tp_iou05 = 0
+    overall_preds_considered_iou05 = 0 # Total predictions for classes with GTs
+    overall_gt_instances_iou05 = 0     # Total GTs for classes with GTs
+
+    for class_idx in tqdm(range(num_classes), desc="Calculating class metrics"):
+        class_name = class_names[class_idx]
+        num_gt_for_class = gt_instance_counts_per_class[class_idx]
+
+        # --- For mAP50, P50, R50 (using stats from IoU=0.5) ---
+        preds_for_class_iou05 = sorted(
+            [p for p in all_pred_stats_by_iou_thresh[iou_0_5_idx] if p[2] == class_idx],
+            key=lambda x: x[0], reverse=True
+        )
+        scores_iou05 = np.array([p[0] for p in preds_for_class_iou05])
+        tp_flags_iou05 = np.array([p[1] for p in preds_for_class_iou05], dtype=bool)
+
+        ap50, p50, r50, tps_at_iou05 = compute_ap_and_pr(scores_iou05, tp_flags_iou05, num_gt_for_class)
+        
+        if num_gt_for_class > 0: # Only consider classes with GT for overall P/R average
+            overall_tp_iou05 += tps_at_iou05
+            overall_preds_considered_iou05 += len(scores_iou05)
+            overall_gt_instances_iou05 += num_gt_for_class
+            all_aps_50_list.append(ap50)
+
+
+        # --- For mAP50-95 ---
+        aps_for_this_class_map_range = []
+        if num_gt_for_class > 0:
+            for iou_list_idx_map_range in range(len(iou_thresholds_map_range)):
+                preds_for_class_iou_current = sorted(
+                    [p for p in all_pred_stats_by_iou_thresh[iou_list_idx_map_range] if p[2] == class_idx],
+                    key=lambda x: x[0], reverse=True
+                )
+                scores_current_iou = np.array([p[0] for p in preds_for_class_iou_current])
+                tp_flags_current_iou = np.array([p[1] for p in preds_for_class_iou_current], dtype=bool)
+                
+                ap_at_current_iou, _, _, _ = compute_ap_and_pr(scores_current_iou, tp_flags_current_iou, num_gt_for_class)
+                aps_for_this_class_map_range.append(ap_at_current_iou)
+        
+        map50_95_class = np.mean(aps_for_this_class_map_range) if aps_for_this_class_map_range else 0.0
+        if num_gt_for_class > 0:
+             all_aps_50_95_list.append(map50_95_class)
+
+        class_summary_metrics.append({
+            'name': class_name,
+            'images_gt': len(images_with_gt_per_class[class_idx]),
+            'instances_gt': num_gt_for_class,
+            'P': p50, 'R': r50,
+            'mAP50': ap50,
+            'mAP50-95': map50_95_class
+        })
+
+    # Calculate "all" class summary
+    num_total_images_with_any_gt = len(set.union(*images_with_gt_per_class)) if images_with_gt_per_class else 0
+    all_total_gt_instances_overall = int(np.sum(gt_instance_counts_per_class))
+    
+    all_p_overall = overall_tp_iou05 / (overall_preds_considered_iou05 + 1e-9) if overall_preds_considered_iou05 > 0 else 0.0
+    all_r_overall = overall_tp_iou05 / (overall_gt_instances_iou05 + 1e-9) if overall_gt_instances_iou05 > 0 else 0.0
+    all_map50_avg = np.mean(all_aps_50_list) if all_aps_50_list else 0.0
+    all_map50_95_avg = np.mean(all_aps_50_95_list) if all_aps_50_95_list else 0.0
+
+    # --- Stage 3: Print Table ---
+    header_format = "{:<20} {:>7} {:>10} {:>10} {:>10} {:>10} {:>10}"
+    logger.info("\nValidation Metrics:")
+    logger.info(header_format.format("Class", "Images", "Instances", "Box(P", "R", "mAP50", "mAP50-95)"))
+    separator = "-" * (20 + 7 + 10 + 10 + 10 + 10 + 10 + (6 * 1)) # Adjust spacing count
+    logger.info(separator)
+    logger.info(header_format.format(
+        "all",
+        num_total_images_with_any_gt,
+        all_total_gt_instances_overall,
+        f"{all_p_overall:.3f}",
+        f"{all_r_overall:.3f}",
+        f"{all_map50_avg:.3f}",
+        f"{all_map50_95_avg:.3f}"
+    ))
+    for metrics in class_summary_metrics:
+        logger.info(header_format.format(
+            metrics['name'],
+            metrics['images_gt'],
+            metrics['instances_gt'],
+            f"{metrics['P']:.3f}",
+            f"{metrics['R']:.3f}",
+            f"{metrics['mAP50']:.3f}",
+            f"{metrics['mAP50-95']:.3f}"
+        ))
+    logger.info(separator)
 
 
 def per_class_metrics(args):
