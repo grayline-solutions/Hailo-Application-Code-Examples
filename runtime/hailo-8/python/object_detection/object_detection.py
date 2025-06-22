@@ -602,12 +602,12 @@ def infer(
     # If validation metrics are run, calculate and print the metrics table
     # Note: This is done on the RPi and is very slow for large datasets.
     # It is recommended to run this on a more powerful machine with the exported JSON file.
-    # if run_validation_metrics and authoritative_class_names:
-    #     if all_hailo_predictions and current_run_ground_truth_map: 
-    #         logger.info("Calculating validation metrics...")
-    #         calculate_and_print_metrics_table(all_hailo_predictions, current_run_ground_truth_map, authoritative_class_names)
-    #     else: logger.warning("Not enough data for validation metrics (preds or GT map missing).")
-    # logger.info('Inference/Validation run completed.')
+    #if run_validation_metrics and authoritative_class_names:
+    #    if all_hailo_predictions and current_run_ground_truth_map: 
+    #        logger.info("Calculating validation metrics...")
+    #        calculate_and_print_metrics_table(all_hailo_predictions, current_run_ground_truth_map, authoritative_class_names)
+    #    else: logger.warning("Not enough data for validation metrics (preds or GT map missing).")
+    #logger.info('Inference/Validation run completed.')
 
 
 def main() -> None:

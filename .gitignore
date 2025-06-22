@@ -186,3 +186,10 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# Installation
+resources
+*venv*/
+runtime/hailo-8/python/object_detection/output/
+runtime/hailo-8/python/object_detection/predictions_export/
+tests/
