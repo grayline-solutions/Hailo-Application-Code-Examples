@@ -51,3 +51,26 @@ This a usage guide for the yolo/voc-style validation of object detection models 
    ```
 6. The detections are written to a large JSON file in the directory `predictions_export`. This can be transfered to a more powerful machine to run the next stage of the validation, the actual calculation of the YOLO/VOC-style metrics.
 7. By default, the script will reference and use the `val` split of the dataset. Optionally, the `test` split can be used instead by passing the boolean argument `--test_split`.
+
+## Stage 2: Calculation of validation metrics and printing table
+
+1. Runs [`offline_evaluator.py`](runtime/hailo-8/python/object_detection/offline_evaluator.py) on a PC, where the JSON file and dataset from Stage 1 are downloaded and the latter set up in the `classes.yaml` file.
+2. To set up the environment
+   ```
+   cd Hailo-Application-Code-Examples
+   python -m venv .offline_val_venv
+   source .offline_val_venv/bin/activate
+   pip install --upgrade pip
+   pip install -r requirements-offline-val.txt
+   ```
+3. To run
+   ```
+   cd runtime/hailo
+   cd runtime/hailo-8/python/object_detection
+   python offline_evaluator.py --help
+   python offline_evaluator.py --metrics-version pyloop --predictions-json path/to/downloaded/predictions/json --data-yaml path/to/the/dataset/and/classes/yaml
+   ```
+4. If the JSON file contains test split predictions, specify this with the boolean argument `--test_split`.
+5. There are two separate implementations of the metrics calculation, `numba_mproc` and `pyloop`. The latter is slightly faster.
+6. The end of the output contains a YOLO-style validation metrics table.
+ 
