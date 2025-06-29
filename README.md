@@ -58,6 +58,7 @@ This a usage guide for the yolo/voc-style validation of object detection models 
 2. To set up the environment
    ```
    cd Hailo-Application-Code-Examples
+   git switch obj-det-val
    python -m venv .offline_val_venv
    source .offline_val_venv/bin/activate
    pip install --upgrade pip
@@ -74,3 +75,10 @@ This a usage guide for the yolo/voc-style validation of object detection models 
 5. There are two separate implementations of the metrics calculation, `numba_mproc` and `pyloop`. The latter is slightly faster.
 6. The end of the output contains a YOLO-style validation metrics table.
  
+## General notes
+
+1. Stage 1 is run on the Hailo-equipped RPi 5. Stage 2 is run on a regular PC, for speed. Stage 2 on a fast PC runs in around 20 min on a 24,500-image validation set.
+2. Stage 1 requires HailoRT. Stage 2 does not.
+3. Similar validation **HAS NOT** been written for the tasks other than object detection.
+4. This code can be taken out of the repository and packaged as a separate package for ease of use and portability.
+5. This repository is a fork of an therefore points upstream to the actual Hailo repository. Do not generate a Pull request unless you want to publish this code.
