@@ -1,100 +1,53 @@
-# Hailo Application Code Examples 
-![github_code](banner.jpeg)
- 
+# Documentation of post-quantization validation code
 
-## 🚀 [Runtime](https://github.com/hailo-ai/Hailo-Application-Code-Examples/tree/main/runtime)
-Application examples for Hailo inference with different languages and operating systems
-<details>
-<summary>Hailo-8</summary>
+## Overview
 
-<div style="margin-left: 20px;">
-<details>
-<summary>C++</summary>
+This a usage guide for the yolo/voc-style validation of object detection models quantized and compiled for Hailo-8/8L accelerators. The code is in the `obj-det-val` branch of a fork of the `Hailo-Application-Code-Examples` and embedded in the `object-detection` example. There are two stages to the process, each having its own Python script, Python environment requirements, and executiong platform:
+1. Gathering of inference output (detections) on an RPi 5 connected to a Hailo accelerator, and export in a JSON format.
+2. Computation of YOLO/VOC-style validation metrics on a regular PC or server, using the exported JSON file.
 
-APP | Description |
-|:---|:---|
-| `classifier` | Classification with models trained on ImageNet
-| `depth_estimation` | Depth estimation with scdepthv3 and stereonet
-| `instance_segmentation` | Instance segmentation with yolov5_seg, yolov8_seg
-| `object_detection` | Object detection - generic, asynchronous
-| `onnxruntime` | Inference with a Hailo device and postprocessing with ONNXRuntime
-| `pose_estimation` | Pose estimation with yolov8
-| `semantic_segmentation` | Semantic segmentation with Resnet18_fcn trained on cityscape
-| `zero_shot_classification` | Zero-Shot Classification with clip_vit_l14
+## Notable files
 
-</details>
+1. [`object_detection.py`](runtime/hailo-8/python/object_detection/object_detection.py) is the script which runs inference on the Hailo accelerator with a compiled (`.hef`) model against a dataset, accumulates the detections and exports them to a JSON file with a distinguishable long name.
+2. [`object_detection_val.py`](runtime/hailo-8/python/object_detection/object_detection_val.py) contains all of the validation code added to the directory. This is all new code. It is used in both stages.
+3. [`object_detection_utils.py`](runtime/hailo-8/python/object_detection/object_detection_utils.py) contains object detection ultility functions. Almost unchanged.
+4. [`../utils.py`](runtime/hailo-8/python/utils.py) contains the inference code using the Hailo platform in the form of the Python API of HailoRT.
+5. [`offline_evaluator.py`](runtime/hailo-8/python/object_detection/offline_evaluator.py) contains the code that performs the validation based on the dataset ground truth and the predictions (detection) contained in the JSON file.
 
-<details>
-<summary>GStreamer</summary>
+## Stage 1: Inference output and JSON export
 
-APP | Description |
-|:---|:---|
-| `advanced_cpp_app` | Complex GStreamer pipeline wrapped by C++
-| `cropper_aggregator` | Gstreamer pipeline with hailocropper and hailoaggregator
-| `detection_python` | Python implementation of TAPPAS detection pipeline using Yolov5m
-| `hailo"_clip` | CLIP inference on a video in real-time
-| `cpp_cascaded_networks_dynamic_osd` | Cascade networks pipeline wrapped by C++
-| `multistream_app` | Inference on multiple streams on the same pipeline, added C++ usability
-| `multistream_multi_networks` | Object detection + semantic segmentation
-| `multistream_stream_id` | Multistream with stream ID
-| `simple_cpp_app` | Simple app that shows how to use Gstreamer with C++ on top
-| `tda4vm/pose_estimation` | Single-stream pose estimation pipelin` on top of GStreamer and TDA4VM DSP
-| `tonsofstreams` | Many streams with 4 Hailo devices
-
-
-</details>
-
-<details>
-<summary>Python</summary>
-
-APP | Description |
-|:---|:---|
-| `depth_estimation` | Depth estimation with StereoNet
-| `detection_with_tracker` | Object detection with tracking using ByteTracker and Supervision
-| `hailo_onnxruntime` | Inference with a Hailo device and postprocessing with ONNXRuntime
-| `instance_segmentation` | Instance segmentation with yolov5_seg, yolov8_seg
-| `lane_detection` | Lane detection with UFLDv2
-| `object_detection` | Object detection with yolo, ssd, centernet
-| `pose_estimation` | Pose estimation with yolov8
-| `super_resolution` | Super resolution with espcnx4, srgan
-
-</details>
-
-<details>
-<summary>Windows</summary>
-
-APP | Description |
-|:---|:---|
-| `yolov5` | Object detection with yolov5 using a C++ script compiled for Windows
-| `yolov8` | Object detection with yolov8 using a C++ script compiled for Windows
-
-</details>
-</details>
-</div>
-
-<details>
-<summary>Hailo-15</summary>
-
-APP | Description |
-|:---|:---|
-| `dsp example` | Demonstrate how to use Hailo DSP 
-| `zero shot classification` | Zero-Shot Classification with clip_resnet50
-
-</details>
-
-
-
-## 🏗️ [Compilation](https://github.com/hailo-ai/Hailo-Application-Code-Examples/tree/main/compilation)
-
-**Basic optimization diagnostic tool:** help diagnosing common optimization issues and mistakes
-</br>**Pointpillars:** Hailo device offload of the heavy 2D-convolutional part of a 3D-object-detection network operating on point-clouds
-</br>**16-bit Optimization:** Guide on how to perform 16-bit optimization
-
-## 📚 [Resources](https://github.com/hailo-ai/Hailo-Application-Code-Examples/tree/main/resources)
-
-Documents and other files
-
-
-## ⚠️ Disclaimer
-
-The code examples are provided by Hailo solely on an “AS IS” basis and “with all faults”. No responsibility or liability is accepted or shall be imposed upon Hailo regarding the accuracy, merchantability, completeness or suitability of the code example. Hailo shall not have any liability or responsibility for errors or omissions in, or any business decisions made by you in reliance on this code example or any part of it. If an error occurs when running the examples, please open a ticket in the "Issues" tab.
+1. Runs [`object_detection.py`](runtime/hailo-8/python/object_detection/object_detection.py) on the RPi 5 with the Hailo accelerator and the Hailo stack installed. It runs inference for a model and a dataset, using a `txt` file of class labels in the format
+   ```
+   class0
+   class1
+   class2
+   ...
+   ```
+2. Optionally collects the detections and compiles a JSON file for export for offline validation metrics calculation on a faster machine. In this case it takes a YOLO-style `yaml` file of object classes passed with the `--data` argument, in the format
+   ```
+   path: path-to-dataset-to-use-in-inference  # best to be an absolute path
+   train: images/train  # relative to path
+   val: images/val
+   test: images/test
+   
+   names:
+     0: class0
+     1: class1
+     2: class2
+     ...
+   ```
+3. It can output annotated images. It can take a single image, a directory of images, a video, or a camera stream passed with the `-i` argument. This is ignored when `--data` is passed. If there is discrepancy between the `labels.txt` file and the `classes.yaml` file, the latter holds precedence for detection collection and export.
+4. This stage requires the `hailo-platform` (see the [`../utils.py`](runtime/hailo-8/python/utils.py) file). Therefore set up the environment at the top level of the repository as follows
+   ```
+   cd Hailo-Application-Code-Examples
+   git switch obj-det-val
+   source setup_env.sh
+   ```
+5. To run the object detection with detection collection and JSON export, download your model and dataset (formatted YOLO-style), reference the latter correctly in the `classes.yaml` file, and
+   ```
+   cd runtime/hailo-8/python/object_detection
+   python object_detection.py --help
+   python object_detection.py -n path/to/model/hef -l path/to/labels/txt --data path/to/dataset/yaml
+   ```
+6. The detections are written to a large JSON file in the directory `predictions_export`. This can be transfered to a more powerful machine to run the next stage of the validation, the actual calculation of the YOLO/VOC-style metrics.
+7. By default, the script will reference and use the `val` split of the dataset. Optionally, the `test` split can be used instead by passing the boolean argument `--test_split`.
