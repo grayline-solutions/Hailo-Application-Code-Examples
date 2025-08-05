@@ -153,13 +153,14 @@ class ObjectDetectionUtils:
         boxes, scores, classes = [], [], []
         num_detections = 0
 
+        if type(input_data) is not list:
+            input_data = [input_data]
+
         for i, detection in enumerate(input_data):
             if len(detection) == 0:
                 continue
-
             for det in detection:
                 bbox, score = det[:4], det[4]
-
                 if score >= threshold:
                     boxes.append(bbox)
                     scores.append(score)
